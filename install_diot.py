@@ -867,17 +867,22 @@ def guided_flash_light_example():
     light_q = shlex.quote(str(light_dir))
     port_q = shlex.quote(port)
 
-    info(f"Flasheando en {port}…")
+    erase_resp = input(c(CYAN, "  ¿Borrar flash antes de flashear? (recomendado en laboratorio) [S/n]: " )).strip().lower()
+    flash_action = "erase-flash flash" if erase_resp not in ("n", "no") else "flash"
+    if flash_action == "erase-flash flash":
+        warn("Se borrará toda la flash (incluye estado Matter comisionado) antes de grabar firmware.")
+
+    info(f"Flasheando en {port} (acción: {flash_action})…")
     rc, _, _ = run_bash(
         f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && source {matter_q}/export.sh && '
-        f'cd {light_q} && idf.py -p {port_q} flash',
+        f'cd {light_q} && idf.py -p {port_q} {flash_action}',
         stream=True,
     )
     if rc != 0:
         warn("Flasheo sin sudo falló. Intentando con sudo (fallback por permisos de puerto)…")
         rc, _, _ = run_bash(
             f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && source {matter_q}/export.sh && '
-            f'cd {light_q} && sudo idf.py -p {port_q} flash',
+            f'cd {light_q} && sudo idf.py -p {port_q} {flash_action}',
             stream=True,
         )
         if rc != 0:
