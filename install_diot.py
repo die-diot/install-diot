@@ -204,6 +204,11 @@ def run_ok(cmd, **kw):
         sys.exit(1)
     return out
 
+
+def run_bash(script, capture=False, cwd=None, stream=False, env=None):
+    """Ejecuta un script en bash -lc para permitir `source`/`BASH_SOURCE`."""
+    return run(["bash", "-lc", script], capture=capture, cwd=cwd, stream=stream, env=env)
+
 # ─────────────────────────────────────────────────
 #  sudo keep-alive
 # ─────────────────────────────────────────────────
@@ -589,9 +594,9 @@ def install_esp_idf():
         # Sourcing export.sh sets IDF_PATH and PATH within the subshell.
         # run() starts from os.environ.copy() so all existing env vars are preserved.
         idf_q = shlex.quote(str(idf_dir))
-        rc, out, err = run(
-            f'. {idf_q}/export.sh && idf.py --version',
-            shell=True, capture=True,
+        rc, out, err = run_bash(
+            f'source {idf_q}/export.sh && idf.py --version',
+            capture=True,
         )
         version_line = (out + err).strip().splitlines()
         for line in version_line:
@@ -633,6 +638,17 @@ def install_esp_matter():
             success("ESP-Matter clonado.")
         mark_done("clone_esp_matter")
 
+    info("Asegurando submódulos de ESP-Matter (idempotente)…")
+    rc, _, _ = run(["git", "submodule", "sync", "--recursive"], cwd=str(matter_dir), stream=True)
+    if rc != 0:
+        error("git submodule sync falló en ESP-Matter.")
+        sys.exit(1)
+
+    rc, _, _ = run(["git", "submodule", "update", "--init", "--recursive"], cwd=str(matter_dir), stream=True)
+    if rc != 0:
+        error("git submodule update --init --recursive falló en ESP-Matter.")
+        sys.exit(1)
+
     if is_done("export_esp_matter"):
         success("ESP-Matter ya exportado/inicializado (checkpoint).")
     else:
@@ -642,9 +658,9 @@ def install_esp_matter():
         idf_q    = shlex.quote(str(idf_dir))
         matter_q = shlex.quote(str(matter_dir))
         # run() preserves os.environ; export.sh sets IDF_PATH/PATH inside the subshell.
-        rc, _, _ = run(
-            f'. {idf_q}/export.sh && cd {matter_q} && . ./export.sh',
-            shell=True, stream=True,
+        rc, _, _ = run_bash(
+            f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && source {matter_q}/export.sh',
+            stream=True,
         )
         if rc != 0:
             error("export.sh de ESP-Matter falló.")
@@ -675,10 +691,10 @@ def test_matter_build():
     matter_q = shlex.quote(str(matter_dir))
     light_q  = shlex.quote(str(light_dir))
     # run() preserves os.environ; the sourced scripts set IDF_PATH/PATH in the subshell.
-    rc, _, _ = run(
-        f'. {idf_q}/export.sh && . {matter_q}/export.sh && '
+    rc, _, _ = run_bash(
+        f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && source {matter_q}/export.sh && '
         f'cd {light_q} && idf.py set-target esp32c6',
-        shell=True, stream=True,
+        stream=True,
     )
     if rc != 0:
         error("idf.py set-target falló.")
@@ -687,10 +703,10 @@ def test_matter_build():
 
     info("Compilando ejemplo light (idf.py build) — puede tardar varios minutos…")
     print()
-    rc, _, _ = run(
-        f'. {idf_q}/export.sh && . {matter_q}/export.sh && '
+    rc, _, _ = run_bash(
+        f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && source {matter_q}/export.sh && '
         f'cd {light_q} && idf.py build',
-        shell=True, stream=True,
+        stream=True,
     )
     if rc != 0:
         error("idf.py build falló. Revisa los errores anteriores.")
