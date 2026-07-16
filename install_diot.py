@@ -89,7 +89,7 @@ def load_checkpoints():
         try:
             with open(CHECKPOINT_FILE) as f:
                 return json.load(f)
-        except Exception:
+        except (json.JSONDecodeError, OSError, ValueError):
             pass
     return {}
 
@@ -261,15 +261,20 @@ def check_wsl2():
     combined = (out + err).strip()
     info(f"Salida wsl -l -v:\n{c(DIM, combined)}")
 
-    # Buscar la distribución activa (marcada con '*')
+    # Buscar la distribución activa (marcada con '*').
+    # The wsl -l -v output format is:
+    #   * Ubuntu-22.04   Running   2
+    # The version is the last whitespace-delimited token on the line.
     wsl_version = None
     for line in combined.splitlines():
         if "*" in line:
-            # Match any positive integer version number (supports future WSL 3+)
-            m = re.search(r"\b([1-9]\d*)\b", line)
-            if m:
-                wsl_version = int(m.group(1))
-                break
+            # Extract the last token on the line as the WSL version number
+            tokens = line.split()
+            if tokens:
+                last_token = tokens[-1]
+                if re.fullmatch(r"[1-9]\d*", last_token):
+                    wsl_version = int(last_token)
+            break
 
     if wsl_version is None:
         warn("No se pudo determinar la versión de WSL con seguridad.")
@@ -313,7 +318,12 @@ def check_ubuntu_version():
         sys.exit(1)
 
     if ver_match:
-        major = int(ver_match.group(1).split(".")[0])
+        try:
+            major = int(ver_match.group(1).split(".")[0])
+        except ValueError:
+            warn("No se pudo interpretar el número de versión de Ubuntu. Continuando…")
+            mark_done("check_ubuntu_version")
+            return
         if major < 24:
             error(
                 f"Ubuntu {ver_match.group(1)} detectado. Se requiere Ubuntu 24 o superior.\n"
@@ -375,6 +385,10 @@ def install_eim():
         return
 
     info("Añadiendo repositorio Espressif a APT sources…")
+    # Note: [trusted=yes] is the method documented in Espressif's official
+    # installation guide (https://docs.espressif.com/projects/esp-idf/).
+    # For tighter security, you could instead import the Espressif GPG key
+    # and replace [trusted=yes] with [signed-by=/etc/apt/keyrings/espressif.gpg].
     rc, _, _ = run(
         'echo "deb [trusted=yes] https://dl.espressif.com/dl/eim/apt/ stable main" '
         '| sudo tee /etc/apt/sources.list.d/espressif.list',
@@ -561,15 +575,13 @@ def install_esp_idf():
         success("ESP-IDF ya verificado (checkpoint).")
     else:
         info("Verificando versión de idf.py…")
-        idf_env = os.environ.copy()
-        idf_env["IDF_PATH"] = str(idf_dir)
 
-        # Sourcing export.sh y capturando la versión
+        # Sourcing export.sh sets IDF_PATH and PATH within the subshell.
+        # run() starts from os.environ.copy() so all existing env vars are preserved.
         idf_q = shlex.quote(str(idf_dir))
         rc, out, err = run(
             f'. {idf_q}/export.sh && idf.py --version',
             shell=True, capture=True,
-            env={"HOME": str(Path.home()), "IDF_PATH": str(idf_dir)}
         )
         version_line = (out + err).strip().splitlines()
         for line in version_line:
@@ -619,10 +631,10 @@ def install_esp_matter():
         print()
         idf_q    = shlex.quote(str(idf_dir))
         matter_q = shlex.quote(str(matter_dir))
+        # run() preserves os.environ; export.sh sets IDF_PATH/PATH inside the subshell.
         rc, _, _ = run(
             f'. {idf_q}/export.sh && cd {matter_q} && . ./export.sh',
             shell=True, stream=True,
-            env={"HOME": str(Path.home()), "IDF_PATH": str(idf_dir)}
         )
         if rc != 0:
             error("export.sh de ESP-Matter falló.")
@@ -652,11 +664,11 @@ def test_matter_build():
     idf_q    = shlex.quote(str(idf_dir))
     matter_q = shlex.quote(str(matter_dir))
     light_q  = shlex.quote(str(light_dir))
+    # run() preserves os.environ; the sourced scripts set IDF_PATH/PATH in the subshell.
     rc, _, _ = run(
         f'. {idf_q}/export.sh && . {matter_q}/export.sh && '
         f'cd {light_q} && idf.py set-target esp32c6',
         shell=True, stream=True,
-        env={"HOME": str(Path.home()), "IDF_PATH": str(idf_dir)}
     )
     if rc != 0:
         error("idf.py set-target falló.")
@@ -669,7 +681,6 @@ def test_matter_build():
         f'. {idf_q}/export.sh && . {matter_q}/export.sh && '
         f'cd {light_q} && idf.py build',
         shell=True, stream=True,
-        env={"HOME": str(Path.home()), "IDF_PATH": str(idf_dir)}
     )
     if rc != 0:
         error("idf.py build falló. Revisa los errores anteriores.")
