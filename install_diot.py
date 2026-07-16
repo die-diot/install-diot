@@ -334,8 +334,10 @@ def apt_update_upgrade():
             capture=True
         )
     if rc != 0:
-        error("apt update falló.")
-        print(c(DIM, err))
+        error("apt update falló. Posibles causas: sin acceso a internet, repositorio no disponible.")
+        output = (out + err).strip()
+        if output:
+            print(c(DIM, output))
         sys.exit(1)
     success("apt update completado.")
 
@@ -426,7 +428,7 @@ def install_usbipd():
         warn("No se encontró powershell.exe. ¿Estás realmente en WSL?")
         warn("Salteando instalación automática de usbipd.")
         warn("Por favor instálalo manualmente desde PowerShell (admin):")
-        warn("    winget install usbipd")
+        warn("    winget install --id dorssel.usbipd-win -e --accept-source-agreements --accept-package-agreements")
         mark_done("install_usbipd")
         return
 
@@ -691,20 +693,34 @@ def finish():
     idf_dir    = Path.home() / "esp" / "esp-idf"
     matter_dir = Path.home() / "esp" / "esp-matter"
 
+    BOX_INNER = 54  # inner width between ║ characters
+
+    def box_line(text="", color=None):
+        """Return a ║-padded line of exact BOX_INNER width (ignoring ANSI codes)."""
+        # Strip ANSI from text to measure visible length
+        visible = re.sub(r"\033\[[^m]*m", "", text)
+        pad = BOX_INNER - len(visible)
+        pad = max(0, pad)
+        colored_text = c(color, text) if color else text
+        return c(CYAN, "║") + colored_text + " " * pad + c(CYAN, "║")
+
+    idf_cmd    = f"    . {idf_dir}/export.sh"
+    matter_cmd = f"    . {matter_dir}/export.sh"
+
     print()
-    print(c(CYAN, "╔══════════════════════════════════════════════════════╗"))
-    print(c(CYAN, "║") + c(GREEN + BOLD, "  ✔  ¡Instalación completada con éxito!               ") + c(CYAN, "║"))
-    print(c(CYAN, "╠══════════════════════════════════════════════════════╣"))
-    print(c(CYAN, "║") + "  Para activar el entorno ESP-IDF en una nueva shell:  " + c(CYAN, "║"))
-    print(c(CYAN, "║") + c(CYAN, f"    . {idf_dir}/export.sh") + " " * max(0, 22 - len(str(idf_dir))) + c(CYAN, "║"))
-    print(c(CYAN, "║") + "  Para activar ESP-Matter:                             " + c(CYAN, "║"))
-    print(c(CYAN, "║") + c(CYAN, f"    . {matter_dir}/export.sh") + " " * max(0, 19 - len(str(matter_dir))) + c(CYAN, "║"))
-    print(c(CYAN, "║") + "                                                       " + c(CYAN, "║"))
-    print(c(CYAN, "║") + "  Conectar USB en WSL (PowerShell admin):              " + c(CYAN, "║"))
-    print(c(CYAN, "║") + "    usbipd list                                        " + c(CYAN, "║"))
-    print(c(CYAN, "║") + "    usbipd bind --busid <BUSID>                        " + c(CYAN, "║"))
-    print(c(CYAN, "║") + "    usbipd attach --wsl --busid <BUSID>                " + c(CYAN, "║"))
-    print(c(CYAN, "╚══════════════════════════════════════════════════════╝"))
+    print(c(CYAN, "╔" + "═" * BOX_INNER + "╗"))
+    print(box_line("  ✔  ¡Instalación completada con éxito!", GREEN + BOLD))
+    print(c(CYAN, "╠" + "═" * BOX_INNER + "╣"))
+    print(box_line("  Para activar el entorno ESP-IDF en una nueva shell:"))
+    print(box_line(idf_cmd, CYAN))
+    print(box_line("  Para activar ESP-Matter:"))
+    print(box_line(matter_cmd, CYAN))
+    print(box_line())
+    print(box_line("  Conectar USB en WSL (PowerShell admin):"))
+    print(box_line("    usbipd list"))
+    print(box_line("    usbipd bind --busid <BUSID>"))
+    print(box_line("    usbipd attach --wsl --busid <BUSID>"))
+    print(c(CYAN, "╚" + "═" * BOX_INNER + "╝"))
     print()
 
 # ─────────────────────────────────────────────────
