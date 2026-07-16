@@ -18,6 +18,7 @@ import time
 import json
 import re
 import shutil
+import grp
 from pathlib import Path
 
 # ─────────────────────────────────────────────────
@@ -775,6 +776,35 @@ def test_matter_build():
     mark_done("test_matter_build")
 
 
+
+def ensure_dialout_access():
+    """Asegura acceso al grupo dialout para puertos serie en WSL."""
+    try:
+        dialout_gid = grp.getgrnam("dialout").gr_gid
+    except KeyError:
+        warn("No existe el grupo 'dialout' en este sistema. Continuando…")
+        return True
+
+    groups = os.getgroups()
+    if dialout_gid in groups:
+        success("Usuario actual ya pertenece a 'dialout'.")
+        return True
+
+    warn("El usuario actual no pertenece al grupo 'dialout'.")
+    info("Añadiendo usuario al grupo dialout para acceso serie sin sudo…")
+    rc, _, _ = run(["sudo", "usermod", "-aG", "dialout", os.environ.get("USER", "")], stream=True)
+    if rc != 0:
+        warn("No se pudo añadir automáticamente al grupo dialout.")
+        warn("Se intentará flashear con sudo como alternativa.")
+        return False
+
+    warn("Usuario añadido a 'dialout', pero requiere nueva sesión para aplicar cambios.")
+    print(c(DIM, "  Acción manual requerida (una sola vez):"))
+    print(c(DIM, "    1) En PowerShell: wsl --shutdown"))
+    print(c(DIM, "    2) Reabrir Ubuntu/WSL"))
+    print(c(DIM, "    3) Relanzar este script (retoma por checkpoints)"))
+    return False
+
 # ─────────────────────────────────────────────────
 #  PASO 10 — Flash guiado en placa ESP32-C6
 # ─────────────────────────────────────────────────
@@ -794,6 +824,8 @@ def guided_flash_light_example():
         sys.exit(1)
 
     info("Este paso requiere la placa conectada y adjuntada a WSL con usbipd.")
+    dialout_ready = ensure_dialout_access()
+
     print(c(DIM, "  1) En PowerShell (Admin): usbipd list"))
     print(c(DIM, "  2) En PowerShell (Admin): usbipd bind --busid <BUSID>"))
     print(c(DIM, "  3) En PowerShell (Admin): usbipd attach --wsl --busid <BUSID>"))
@@ -809,7 +841,9 @@ def guided_flash_light_example():
     if ports:
         info("Puertos serie detectados en WSL:")
         for p in ports:
-            print(c(DIM, f"    • {p}"))
+            rw = os.access(p, os.R_OK | os.W_OK)
+            suffix = " (OK lectura/escritura)" if rw else " (sin permisos RW en esta sesión)"
+            print(c(DIM, f"    • {p}{suffix}"))
         default_port = ports[0]
     else:
         warn("No se detectaron puertos /dev/ttyACM* ni /dev/ttyUSB*.")
@@ -830,8 +864,23 @@ def guided_flash_light_example():
         stream=True,
     )
     if rc != 0:
-        error("Flasheo falló. Verifica usbipd attach y el puerto serie.")
-        sys.exit(1)
+        warn("Flasheo sin sudo falló. Intentando con sudo (fallback por permisos de puerto)…")
+        rc, _, _ = run_bash(
+            f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && source {matter_q}/export.sh && '
+            f'cd {light_q} && sudo idf.py -p {port_q} flash',
+            stream=True,
+        )
+        if rc != 0:
+            error("Flasheo falló incluso con sudo.")
+            print(c(DIM, "  Verifica en PowerShell (Admin):"))
+            print(c(DIM, "    usbipd list"))
+            print(c(DIM, "    usbipd detach --busid <BUSID>"))
+            print(c(DIM, "    usbipd attach --wsl --busid <BUSID>"))
+            print(c(DIM, "  Verifica en WSL:"))
+            print(c(DIM, "    ls -l /dev/ttyACM* /dev/ttyUSB*"))
+            if not dialout_ready:
+                print(c(DIM, "    (si añadiste dialout, haz wsl --shutdown y relanza script)"))
+            sys.exit(1)
 
     success("Flash completado.")
 
