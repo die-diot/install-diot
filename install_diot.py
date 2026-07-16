@@ -693,6 +693,7 @@ def ensure_gn_available(idf_dir: Path, matter_dir: Path):
         sys.exit(1)
 
     chip_q = shlex.quote(str(chip_dir))
+    info("Bootstrap de Matter SDK en curso (descarga paquetes CIPD; puede tardar varios minutos)…")
     rc, _, _ = run_bash(
         f'cd {chip_q} && source scripts/bootstrap.sh',
         stream=True,
@@ -731,6 +732,15 @@ def test_matter_build():
     if not light_dir.exists():
         error(f"No se encontró el directorio de ejemplo: {light_dir}")
         sys.exit(1)
+
+    build_dir = light_dir / "build"
+    if build_dir.exists():
+        info("Limpiando build previo de esp-matter/examples/light para evitar fallos de set-target…")
+        try:
+            shutil.rmtree(build_dir)
+        except OSError as e:
+            error(f"No se pudo limpiar el directorio build previo: {e}")
+            sys.exit(1)
 
     info("Verificando disponibilidad de GN para Matter…")
     ensure_gn_available(idf_dir, matter_dir)
