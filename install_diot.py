@@ -668,6 +668,52 @@ def install_esp_matter():
         success("ESP-Matter inicializado.")
         mark_done("export_esp_matter")
 
+
+
+def ensure_gn_available(idf_dir: Path, matter_dir: Path):
+    """Verifica que `gn` esté disponible; intenta bootstrap si falta."""
+    idf_q = shlex.quote(str(idf_dir))
+    matter_q = shlex.quote(str(matter_dir))
+
+    rc, out, err = run_bash(
+        f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && '
+        f'source {matter_q}/export.sh && command -v gn',
+        capture=True,
+    )
+    gn_path = (out + err).strip().splitlines()
+    if rc == 0 and gn_path:
+        success(f"GN disponible: {gn_path[-1]}")
+        return
+
+    warn("No se encontró 'gn' en PATH. Intentando bootstrap de Matter SDK…")
+
+    chip_dir = matter_dir / 'connectedhomeip' / 'connectedhomeip'
+    if not chip_dir.exists():
+        error(f"No se encontró connectedhomeip en: {chip_dir}")
+        sys.exit(1)
+
+    chip_q = shlex.quote(str(chip_dir))
+    rc, _, _ = run_bash(
+        f'cd {chip_q} && source scripts/bootstrap.sh',
+        stream=True,
+    )
+    if rc != 0:
+        error("bootstrap.sh falló al preparar GN/Pigweed para Matter.")
+        sys.exit(1)
+
+    rc, out, err = run_bash(
+        f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && '
+        f'source {matter_q}/export.sh && command -v gn',
+        capture=True,
+    )
+    gn_path = (out + err).strip().splitlines()
+    if rc != 0 or not gn_path:
+        error("GN sigue sin estar disponible tras bootstrap.")
+        error("Abre una shell nueva y vuelve a ejecutar el script desde checkpoints.")
+        sys.exit(1)
+
+    success(f"GN disponible tras bootstrap: {gn_path[-1]}")
+
 # ─────────────────────────────────────────────────
 #  PASO 9 — Test final: build del ejemplo light
 # ─────────────────────────────────────────────────
@@ -685,6 +731,9 @@ def test_matter_build():
     if not light_dir.exists():
         error(f"No se encontró el directorio de ejemplo: {light_dir}")
         sys.exit(1)
+
+    info("Verificando disponibilidad de GN para Matter…")
+    ensure_gn_available(idf_dir, matter_dir)
 
     info("Configurando target esp32c6…")
     idf_q    = shlex.quote(str(idf_dir))
@@ -714,6 +763,78 @@ def test_matter_build():
     success("Build del ejemplo light completado con éxito.")
 
     mark_done("test_matter_build")
+
+
+# ─────────────────────────────────────────────────
+#  PASO 10 — Flash guiado en placa ESP32-C6
+# ─────────────────────────────────────────────────
+def guided_flash_light_example():
+    step_banner(10, TOTAL_STEPS, "Flash guiado en placa ESP32-C6")
+
+    if is_done("guided_flash_light_example"):
+        success("Flash guiado ya completado (checkpoint).")
+        return
+
+    idf_dir    = Path.home() / "esp" / "esp-idf"
+    matter_dir = Path.home() / "esp" / "esp-matter"
+    light_dir  = matter_dir / "examples" / "light"
+
+    if not light_dir.exists():
+        error(f"No se encontró el directorio de ejemplo: {light_dir}")
+        sys.exit(1)
+
+    info("Este paso requiere la placa conectada y adjuntada a WSL con usbipd.")
+    print(c(DIM, "  1) En PowerShell (Admin): usbipd list"))
+    print(c(DIM, "  2) En PowerShell (Admin): usbipd bind --busid <BUSID>"))
+    print(c(DIM, "  3) En PowerShell (Admin): usbipd attach --wsl --busid <BUSID>"))
+    print(c(DIM, "  4) Vuelve aquí y pulsa ENTER para continuar"))
+    print()
+
+    resp = input(c(CYAN, "  Pulsa ENTER cuando la placa esté adjuntada a WSL (o escribe 's' para saltar): "))
+    if resp.strip().lower() in ("s", "skip", "saltar"):
+        warn("Flash omitido por el usuario. Puedes relanzar el script y retomará este paso.")
+        return
+
+    ports = sorted([str(p) for p in Path('/dev').glob('ttyACM*')] + [str(p) for p in Path('/dev').glob('ttyUSB*')])
+    if ports:
+        info("Puertos serie detectados en WSL:")
+        for p in ports:
+            print(c(DIM, f"    • {p}"))
+        default_port = ports[0]
+    else:
+        warn("No se detectaron puertos /dev/ttyACM* ni /dev/ttyUSB*.")
+        default_port = "/dev/ttyACM0"
+
+    port_in = input(c(CYAN, f"  Puerto para flashear [{default_port}]: " )).strip()
+    port = port_in or default_port
+
+    idf_q = shlex.quote(str(idf_dir))
+    matter_q = shlex.quote(str(matter_dir))
+    light_q = shlex.quote(str(light_dir))
+    port_q = shlex.quote(port)
+
+    info(f"Flasheando en {port}…")
+    rc, _, _ = run_bash(
+        f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && source {matter_q}/export.sh && '
+        f'cd {light_q} && idf.py -p {port_q} flash',
+        stream=True,
+    )
+    if rc != 0:
+        error("Flasheo falló. Verifica usbipd attach y el puerto serie.")
+        sys.exit(1)
+
+    success("Flash completado.")
+
+    mon = input(c(CYAN, "  ¿Abrir monitor serie ahora? [S/n]: " )).strip().lower()
+    if mon not in ("n", "no"):
+        info("Abriendo monitor (salir con Ctrl+] o Ctrl+C)…")
+        run_bash(
+            f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && source {matter_q}/export.sh && '
+            f'cd {light_q} && idf.py -p {port_q} monitor',
+            stream=True,
+        )
+
+    mark_done("guided_flash_light_example")
 
 # ─────────────────────────────────────────────────
 #  Pantalla de bienvenida
@@ -783,7 +904,7 @@ def finish():
 # ─────────────────────────────────────────────────
 #  Número total de pasos (para la barra de progreso)
 # ─────────────────────────────────────────────────
-TOTAL_STEPS = 9
+TOTAL_STEPS = 10
 
 # ─────────────────────────────────────────────────
 #  Main
@@ -802,6 +923,7 @@ def main():
         install_esp_idf()
         install_esp_matter()
         test_matter_build()
+        guided_flash_light_example()
     except KeyboardInterrupt:
         print()
         warn("Instalación interrumpida por el usuario.")
