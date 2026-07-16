@@ -89,7 +89,7 @@ def load_checkpoints():
         try:
             with open(CHECKPOINT_FILE) as f:
                 return json.load(f)
-        except (json.JSONDecodeError, OSError, ValueError):
+        except (json.JSONDecodeError, OSError):
             pass
     return {}
 
@@ -211,8 +211,14 @@ _sudo_alive = threading.Event()
 
 def _keep_sudo_alive():
     while not _sudo_alive.is_set():
-        subprocess.run(["sudo", "-n", "true"],
-                       capture_output=True)
+        result = subprocess.run(
+            ["sudo", "-n", "true"], capture_output=True
+        )
+        if result.returncode != 0:
+            warn(
+                "Las credenciales sudo han expirado durante la instalación. "
+                "Es posible que los próximos pasos que requieran sudo fallen."
+            )
         time.sleep(50)
 
 def request_sudo():
@@ -467,9 +473,13 @@ def install_usbipd():
     info("Ejecutando winget install usbipd (puede pedir confirmación)…")
     print()
 
-    # -NoProfile speeds up startup and avoids interactive profile scripts that
-    # could block non-interactive execution; security policies are enforced by
-    # winget itself via --accept-source-agreements / --accept-package-agreements.
+    # -NoProfile: skips the user's PowerShell profile scripts so this non-interactive
+    # call doesn't block waiting for user input or fail due to interactive-only profiles.
+    # Security trade-off: this also bypasses any execution-policy restrictions set in
+    # the user's profile. If your environment enforces strict execution policies for
+    # security reasons, run the following command manually in an admin PowerShell instead:
+    #   Set-ExecutionPolicy Bypass -Scope Process -Force; <WINGET_USBIPD_CMD>
+    # winget validates packages with its own signature checking (Microsoft Store).
     rc, out, err = run(
         [ps_exe, "-NoProfile", "-Command", WINGET_USBIPD_CMD],
         capture=True

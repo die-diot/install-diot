@@ -16,7 +16,7 @@ Instala en un solo paso:
 | Windows   | 10 / 11 con WSL 2 activo |
 | Distribución WSL | Ubuntu 24.04 LTS |
 | RAM libre | 4 GB recomendado |
-| Espacio en disco | ~10 GB (Matter + toolchains) |
+| Espacio en disco | ~20 GB (Matter + toolchains + artefactos de build) |
 | Python | 3.8+ (incluido en Ubuntu 24) |
 
 ## Uso
