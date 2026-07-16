@@ -778,17 +778,23 @@ def test_matter_build():
 
 
 def ensure_dialout_access():
-    """Asegura acceso al grupo dialout para puertos serie en WSL."""
+    """Asegura acceso al grupo dialout para puertos serie en WSL.
+
+    Retorna:
+      - "ready": el usuario ya tenía acceso
+      - "restart_required": se añadió al grupo, hay que reiniciar WSL
+      - "fallback": no se pudo añadir; se intentará con sudo en flash
+    """
     try:
         dialout_gid = grp.getgrnam("dialout").gr_gid
     except KeyError:
         warn("No existe el grupo 'dialout' en este sistema. Continuando…")
-        return True
+        return "ready"
 
     groups = os.getgroups()
     if dialout_gid in groups:
         success("Usuario actual ya pertenece a 'dialout'.")
-        return True
+        return "ready"
 
     warn("El usuario actual no pertenece al grupo 'dialout'.")
     info("Añadiendo usuario al grupo dialout para acceso serie sin sudo…")
@@ -796,14 +802,14 @@ def ensure_dialout_access():
     if rc != 0:
         warn("No se pudo añadir automáticamente al grupo dialout.")
         warn("Se intentará flashear con sudo como alternativa.")
-        return False
+        return "fallback"
 
     warn("Usuario añadido a 'dialout', pero requiere nueva sesión para aplicar cambios.")
     print(c(DIM, "  Acción manual requerida (una sola vez):"))
     print(c(DIM, "    1) En PowerShell: wsl --shutdown"))
     print(c(DIM, "    2) Reabrir Ubuntu/WSL"))
     print(c(DIM, "    3) Relanzar este script (retoma por checkpoints)"))
-    return False
+    return "restart_required"
 
 # ─────────────────────────────────────────────────
 #  PASO 10 — Flash guiado en placa ESP32-C6
@@ -824,7 +830,11 @@ def guided_flash_light_example():
         sys.exit(1)
 
     info("Este paso requiere la placa conectada y adjuntada a WSL con usbipd.")
-    dialout_ready = ensure_dialout_access()
+    dialout_status = ensure_dialout_access()
+    if dialout_status == "restart_required":
+        warn("Deteniendo instalación para aplicar cambios de grupo dialout.")
+        warn("Reinicia WSL y vuelve a ejecutar install_diot.py; continuará desde checkpoints.")
+        sys.exit(2)
 
     print(c(DIM, "  1) En PowerShell (Admin): usbipd list"))
     print(c(DIM, "  2) En PowerShell (Admin): usbipd bind --busid <BUSID>"))
@@ -878,7 +888,7 @@ def guided_flash_light_example():
             print(c(DIM, "    usbipd attach --wsl --busid <BUSID>"))
             print(c(DIM, "  Verifica en WSL:"))
             print(c(DIM, "    ls -l /dev/ttyACM* /dev/ttyUSB*"))
-            if not dialout_ready:
+            if dialout_status != "ready":
                 print(c(DIM, "    (si añadiste dialout, haz wsl --shutdown y relanza script)"))
             sys.exit(1)
 
