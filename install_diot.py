@@ -574,10 +574,10 @@ def install_esp_idf():
     if is_done("install_esp_idf_tools"):
         success("Herramientas ESP-IDF ya instaladas (checkpoint).")
     else:
-        info("Ejecutando install.sh esp32c6 (descarga toolchain — puede tardar)…")
+        info("Ejecutando install.sh esp32,esp32c6 (compatibilidad VS Code + C6; puede tardar)…")
         print()
         rc, _, _ = run(
-            ["bash", "install.sh", "esp32c6"],
+            ["bash", "install.sh", "esp32,esp32c6"],
             cwd=str(idf_dir),
             stream=True
         )
@@ -927,6 +927,18 @@ def configure_vscode_remote_wsl():
 
     info("Este paso deja VS Code listo para usar ESP-IDF en WSL en cualquier proyecto.")
 
+    xtensa_tools_dir = tools_dir / "tools" / "xtensa-esp-elf"
+    ulp_tools_dir = tools_dir / "tools" / "esp32ulp-elf"
+    if not xtensa_tools_dir.exists() or not ulp_tools_dir.exists():
+        warn("Faltan toolchains xtensa/ulp que la extensión ESP-IDF suele validar.")
+        info("Instalando toolchains adicionales con install.sh esp32 (solo una vez)…")
+        rc, _, _ = run(["bash", "install.sh", "esp32"], cwd=str(idf_dir), stream=True)
+        if rc != 0:
+            warn("No se pudieron instalar automáticamente los toolchains extra.")
+            warn("La extensión podría seguir mostrando errores de setup en VS Code.")
+        else:
+            success("Toolchains extra (esp32/xtensa/ulp) instalados para compatibilidad de extensión.")
+
     code_cmd = shutil.which("code")
     if code_cmd is None:
         warn("No se encontró el comando 'code' en WSL todavía.")
@@ -937,6 +949,22 @@ def configure_vscode_remote_wsl():
         print(c(DIM, "    4) En el remoto WSL, instala/reinstala 'Espressif IDF'"))
         input(c(CYAN, "  Cuando lo hayas hecho, pulsa ENTER para continuar: "))
         code_cmd = shutil.which("code")
+
+    bashrc_path = Path.home() / ".bashrc"
+    export_lines = [
+        f"export IDF_PATH={idf_dir}",
+        f"export IDF_TOOLS_PATH={tools_dir}",
+        f"export ESP_MATTER_PATH={Path.home() / 'esp' / 'esp-matter'}",
+    ]
+    existing_bashrc = bashrc_path.read_text() if bashrc_path.exists() else ""
+    appended = False
+    for line in export_lines:
+        if line not in existing_bashrc:
+            existing_bashrc += ("\n" if existing_bashrc and not existing_bashrc.endswith("\n") else "") + line + "\n"
+            appended = True
+    if appended:
+        bashrc_path.write_text(existing_bashrc)
+        success("Variables IDF/Matter añadidas a ~/.bashrc para nuevas terminales WSL.")
 
     settings_path = Path.home() / ".vscode-server" / "data" / "Machine" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -962,7 +990,14 @@ def configure_vscode_remote_wsl():
         custom_vars = {}
     custom_vars["IDF_PATH"] = str(idf_dir)
     custom_vars["IDF_TOOLS_PATH"] = str(tools_dir)
+    custom_vars["IDF_TARGET"] = "esp32c6"
     settings["idf.customExtraVars"] = custom_vars
+
+    serial_ports = sorted([str(p) for p in Path('/dev').glob('ttyACM*')] + [str(p) for p in Path('/dev').glob('ttyUSB*')])
+    default_port = serial_ports[0] if serial_ports else "/dev/ttyACM0"
+    settings["idf.port"] = default_port
+    settings["idf.monitorPort"] = default_port
+    settings["idf.flashType"] = "UART"
 
     settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
     success(f"Configuración remota guardada en: {settings_path}")
