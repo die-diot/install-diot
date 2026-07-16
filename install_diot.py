@@ -22,6 +22,13 @@ from pathlib import Path
 # ─────────────────────────────────────────────────
 #  Colores ANSI
 # ─────────────────────────────────────────────────
+BOX_WIDTH = 54  # inner width (between ║ characters) for all UI boxes
+
+WINGET_USBIPD_CMD = (
+    "winget install --id dorssel.usbipd-win -e "
+    "--accept-source-agreements --accept-package-agreements"
+)
+
 RESET   = "\033[0m"
 BOLD    = "\033[1m"
 DIM     = "\033[2m"
@@ -37,7 +44,7 @@ def c(color, text):
     return f"{color}{text}{RESET}"
 
 def header(text):
-    width = 54
+    width = BOX_WIDTH
     print()
     print(c(CYAN, "╔" + "═" * width + "╗"))
     for line in text.strip().splitlines():
@@ -342,12 +349,15 @@ def apt_update_upgrade():
     success("apt update completado.")
 
     info("Ejecutando sudo apt upgrade -y  (puede tardar varios minutos)…")
-    run(
+    rc, _, _ = run(
         ["sudo", "apt", "upgrade", "-y",
          "-o", "Dpkg::Options::=--force-confdef",
          "-o", "Dpkg::Options::=--force-confold"],
         stream=True
     )
+    if rc != 0:
+        error("apt upgrade falló. Revisa los errores anteriores.")
+        sys.exit(1)
     success("apt upgrade completado.")
 
     mark_done("apt_update_upgrade")
@@ -375,8 +385,12 @@ def install_eim():
 
     info("Actualizando lista de paquetes…")
     with Spinner("apt update"):
-        run(["sudo", "apt", "update", "-y"], capture=True)
-    success("Lista de paquetes actualizada.")
+        rc, out, err = run(["sudo", "apt", "update", "-y"], capture=True)
+    if rc != 0:
+        warn("apt update falló tras añadir el repositorio EIM.")
+        warn("Continuando de todas formas — puede que el repositorio no esté disponible aún.")
+    else:
+        success("Lista de paquetes actualizada.")
 
     info("Instalando eim-cli…")
     with Spinner("instalando eim-cli"):
@@ -428,7 +442,7 @@ def install_usbipd():
         warn("No se encontró powershell.exe. ¿Estás realmente en WSL?")
         warn("Salteando instalación automática de usbipd.")
         warn("Por favor instálalo manualmente desde PowerShell (admin):")
-        warn("    winget install --id dorssel.usbipd-win -e --accept-source-agreements --accept-package-agreements")
+        warn(f"    {WINGET_USBIPD_CMD}")
         mark_done("install_usbipd")
         return
 
@@ -437,9 +451,7 @@ def install_usbipd():
     print()
 
     rc, out, err = run(
-        [ps_exe, "-NoProfile", "-Command",
-         "winget install --id dorssel.usbipd-win -e --accept-source-agreements "
-         "--accept-package-agreements"],
+        [ps_exe, "-NoProfile", "-Command", WINGET_USBIPD_CMD],
         capture=True
     )
     combined = (out + err).strip()
@@ -693,14 +705,10 @@ def finish():
     idf_dir    = Path.home() / "esp" / "esp-idf"
     matter_dir = Path.home() / "esp" / "esp-matter"
 
-    BOX_INNER = 54  # inner width between ║ characters
-
     def box_line(text="", color=None):
-        """Return a ║-padded line of exact BOX_INNER width (ignoring ANSI codes)."""
-        # Strip ANSI from text to measure visible length
+        """Return a ║-padded line of exact BOX_WIDTH (ignoring ANSI codes)."""
         visible = re.sub(r"\033\[[^m]*m", "", text)
-        pad = BOX_INNER - len(visible)
-        pad = max(0, pad)
+        pad = max(0, BOX_WIDTH - len(visible))
         colored_text = c(color, text) if color else text
         return c(CYAN, "║") + colored_text + " " * pad + c(CYAN, "║")
 
@@ -708,9 +716,9 @@ def finish():
     matter_cmd = f"    . {matter_dir}/export.sh"
 
     print()
-    print(c(CYAN, "╔" + "═" * BOX_INNER + "╗"))
+    print(c(CYAN, "╔" + "═" * BOX_WIDTH + "╗"))
     print(box_line("  ✔  ¡Instalación completada con éxito!", GREEN + BOLD))
-    print(c(CYAN, "╠" + "═" * BOX_INNER + "╣"))
+    print(c(CYAN, "╠" + "═" * BOX_WIDTH + "╣"))
     print(box_line("  Para activar el entorno ESP-IDF en una nueva shell:"))
     print(box_line(idf_cmd, CYAN))
     print(box_line("  Para activar ESP-Matter:"))
@@ -720,7 +728,7 @@ def finish():
     print(box_line("    usbipd list"))
     print(box_line("    usbipd bind --busid <BUSID>"))
     print(box_line("    usbipd attach --wsl --busid <BUSID>"))
-    print(c(CYAN, "╚" + "═" * BOX_INNER + "╝"))
+    print(c(CYAN, "╚" + "═" * BOX_WIDTH + "╝"))
     print()
 
 # ─────────────────────────────────────────────────
