@@ -899,12 +899,13 @@ def guided_flash_light_example():
 
     success("Flash completado.")
 
-    mon = input(c(CYAN, "  ¿Abrir monitor serie ahora? [S/n]: " )).strip().lower()
-    if mon not in ("n", "no"):
-        info("Abriendo monitor (salir con Ctrl+] o Ctrl+C)…")
+    mon = input(c(CYAN, "  ¿Abrir monitor serie temporal (60s) ahora? [s/N]: " )).strip().lower()
+    if mon in ("s", "si", "sí", "y", "yes"):
+        info("Abriendo monitor temporal 60s (se cerrará solo para continuar instalación)…")
+        info("Si quieres monitor interactivo largo, ejecútalo luego manualmente con: idf.py -p <PUERTO> monitor")
         run_bash(
             f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && source {matter_q}/export.sh && '
-            f'cd {light_q} && idf.py -p {port_q} monitor',
+            f'cd {light_q} && timeout 60s idf.py -p {port_q} monitor || true',
             stream=True,
         )
 
