@@ -910,6 +910,79 @@ def guided_flash_light_example():
 
     mark_done("guided_flash_light_example")
 
+
+# ─────────────────────────────────────────────────
+#  PASO 11 — Configurar VS Code remoto (WSL)
+# ─────────────────────────────────────────────────
+def configure_vscode_remote_wsl():
+    step_banner(11, TOTAL_STEPS, "Configurar VS Code remoto (WSL)")
+
+    if is_done("configure_vscode_remote_wsl"):
+        success("Configuración de VS Code remoto ya completada (checkpoint).")
+        return
+
+    idf_dir = Path.home() / "esp" / "esp-idf"
+    tools_dir = Path.home() / ".espressif"
+
+    info("Este paso deja VS Code listo para usar ESP-IDF en WSL en cualquier proyecto.")
+
+    code_cmd = shutil.which("code")
+    if code_cmd is None:
+        warn("No se encontró el comando 'code' en WSL todavía.")
+        print(c(DIM, "  Acción manual requerida:"))
+        print(c(DIM, "    1) En Windows, abre VS Code"))
+        print(c(DIM, "    2) Instala la extensión 'Remote - WSL' si falta"))
+        print(c(DIM, "    3) Conéctate a Ubuntu/WSL"))
+        print(c(DIM, "    4) En el remoto WSL, instala/reinstala 'Espressif IDF'"))
+        input(c(CYAN, "  Cuando lo hayas hecho, pulsa ENTER para continuar: "))
+        code_cmd = shutil.which("code")
+
+    settings_path = Path.home() / ".vscode-server" / "data" / "Machine" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    settings = {}
+    if settings_path.exists():
+        raw = settings_path.read_text()
+        if raw.strip():
+            try:
+                loaded = json.loads(raw)
+                if isinstance(loaded, dict):
+                    settings = loaded
+                else:
+                    warn("El settings.json remoto no es un objeto JSON. Se reemplazará por uno válido.")
+            except json.JSONDecodeError:
+                backup = settings_path.with_suffix(settings_path.suffix + ".bak")
+                shutil.copy2(settings_path, backup)
+                warn(f"settings.json no era JSON válido. Copia de seguridad: {backup}")
+
+    settings["idf.currentSetup"] = str(idf_dir)
+    custom_vars = settings.get("idf.customExtraVars")
+    if not isinstance(custom_vars, dict):
+        custom_vars = {}
+    custom_vars["IDF_PATH"] = str(idf_dir)
+    custom_vars["IDF_TOOLS_PATH"] = str(tools_dir)
+    settings["idf.customExtraVars"] = custom_vars
+
+    settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
+    success(f"Configuración remota guardada en: {settings_path}")
+
+    if code_cmd is not None:
+        info("Intentando instalar la extensión ESP-IDF en el remoto WSL…")
+        rc, _, _ = run([code_cmd, "--install-extension", "espressif.esp-idf-extension", "--force"], stream=True)
+        if rc == 0:
+            success("Extensión 'Espressif IDF' instalada/actualizada en WSL.")
+        else:
+            warn("No se pudo instalar automáticamente la extensión ESP-IDF por CLI.")
+            warn("Instálala manualmente en Extensions (contexto WSL).")
+    else:
+        warn("Comando 'code' no disponible en WSL. Extensión ESP-IDF deberá instalarse manualmente.")
+
+    print(c(DIM, "  Siguiente validación recomendada en VS Code (WSL):"))
+    print(c(DIM, "    • ESP-IDF: Doctor Command"))
+    print(c(DIM, "    • ESP-IDF: Open ESP-IDF Terminal"))
+
+    mark_done("configure_vscode_remote_wsl")
+
 # ─────────────────────────────────────────────────
 #  Pantalla de bienvenida
 # ─────────────────────────────────────────────────
@@ -978,7 +1051,7 @@ def finish():
 # ─────────────────────────────────────────────────
 #  Número total de pasos (para la barra de progreso)
 # ─────────────────────────────────────────────────
-TOTAL_STEPS = 10
+TOTAL_STEPS = 11
 
 # ─────────────────────────────────────────────────
 #  Main
@@ -998,6 +1071,7 @@ def main():
         install_esp_matter()
         test_matter_build()
         guided_flash_light_example()
+        configure_vscode_remote_wsl()
     except KeyboardInterrupt:
         print()
         warn("Instalación interrumpida por el usuario.")
