@@ -919,13 +919,20 @@ def configure_vscode_remote_wsl():
     step_banner(11, TOTAL_STEPS, "Configurar VS Code remoto (WSL)")
 
     if is_done("configure_vscode_remote_wsl"):
-        success("Configuración de VS Code remoto ya completada (checkpoint).")
-        return
+        warn("Paso 11 ya estaba marcado, pero se revalidará la configuración VS Code para aplicar correcciones.")
 
     idf_dir = Path.home() / "esp" / "esp-idf"
     tools_dir = Path.home() / ".espressif"
 
     info("Este paso deja VS Code listo para usar ESP-IDF en WSL en cualquier proyecto.")
+
+    python_env_candidates = sorted((tools_dir / "python_env").glob("*/bin/python"))
+    idf_python_env_path = os.environ.get("IDF_PYTHON_ENV_PATH", "")
+    if not idf_python_env_path and python_env_candidates:
+        # Prefer envs matching idf6.0 if available; otherwise first detected env.
+        preferred = [p for p in python_env_candidates if "idf6.0" in str(p)]
+        chosen_python = preferred[0] if preferred else python_env_candidates[0]
+        idf_python_env_path = str(chosen_python.parent)
 
     xtensa_tools_dir = tools_dir / "tools" / "xtensa-esp-elf"
     ulp_tools_dir = tools_dir / "tools" / "esp32ulp-elf"
@@ -954,11 +961,14 @@ def configure_vscode_remote_wsl():
     export_lines = [
         f"export IDF_PATH={idf_dir}",
         f"export IDF_TOOLS_PATH={tools_dir}",
+        f"export IDF_PYTHON_ENV_PATH={idf_python_env_path}" if idf_python_env_path else "",
         f"export ESP_MATTER_PATH={Path.home() / 'esp' / 'esp-matter'}",
     ]
     existing_bashrc = bashrc_path.read_text() if bashrc_path.exists() else ""
     appended = False
     for line in export_lines:
+        if not line:
+            continue
         if line not in existing_bashrc:
             existing_bashrc += ("\n" if existing_bashrc and not existing_bashrc.endswith("\n") else "") + line + "\n"
             appended = True
@@ -990,6 +1000,8 @@ def configure_vscode_remote_wsl():
         custom_vars = {}
     custom_vars["IDF_PATH"] = str(idf_dir)
     custom_vars["IDF_TOOLS_PATH"] = str(tools_dir)
+    if idf_python_env_path:
+        custom_vars["IDF_PYTHON_ENV_PATH"] = idf_python_env_path
     custom_vars["IDF_TARGET"] = "esp32c6"
     settings["idf.customExtraVars"] = custom_vars
 
