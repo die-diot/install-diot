@@ -11,6 +11,7 @@ Uso: python3 install_diot.py
 
 import sys
 import os
+import shlex
 import subprocess
 import threading
 import time
@@ -264,7 +265,8 @@ def check_wsl2():
     wsl_version = None
     for line in combined.splitlines():
         if "*" in line:
-            m = re.search(r"\b([12])\b", line)
+            # Match any positive integer version number (supports future WSL 3+)
+            m = re.search(r"\b([1-9]\d*)\b", line)
             if m:
                 wsl_version = int(m.group(1))
                 break
@@ -272,16 +274,16 @@ def check_wsl2():
     if wsl_version is None:
         warn("No se pudo determinar la versión de WSL con seguridad.")
         warn("Continuando de todas formas…")
-    elif wsl_version != 2:
+    elif wsl_version < 2:
         error(
-            f"La distribución activa está usando WSL {wsl_version}, se requiere WSL 2.\n"
+            f"La distribución activa está usando WSL {wsl_version}, se requiere WSL 2 o superior.\n"
             f"  Ejecuta en PowerShell (como administrador):\n"
             f"    wsl --set-version <NombreDistro> 2\n"
             f"    wsl --set-default-version 2"
         )
         sys.exit(1)
     else:
-        success("WSL versión 2 confirmado.")
+        success(f"WSL versión {wsl_version} confirmado.")
 
     mark_done("check_wsl2")
 
@@ -385,12 +387,13 @@ def install_eim():
 
     info("Actualizando lista de paquetes…")
     with Spinner("apt update"):
-        rc, out, err = run(["sudo", "apt", "update", "-y"], capture=True)
-    if rc != 0:
+        rc_update, out, err = run(["sudo", "apt", "update", "-y"], capture=True)
+    if rc_update != 0:
         warn("apt update falló tras añadir el repositorio EIM.")
-        warn("Continuando de todas formas — puede que el repositorio no esté disponible aún.")
-    else:
-        success("Lista de paquetes actualizada.")
+        warn("Saltando instalación de EIM — ESP-IDF será instalado directamente con git.")
+        mark_done("install_eim")
+        return
+    success("Lista de paquetes actualizada.")
 
     info("Instalando eim-cli…")
     with Spinner("instalando eim-cli"):
@@ -450,6 +453,9 @@ def install_usbipd():
     info("Ejecutando winget install usbipd (puede pedir confirmación)…")
     print()
 
+    # -NoProfile speeds up startup and avoids interactive profile scripts that
+    # could block non-interactive execution; security policies are enforced by
+    # winget itself via --accept-source-agreements / --accept-package-agreements.
     rc, out, err = run(
         [ps_exe, "-NoProfile", "-Command", WINGET_USBIPD_CMD],
         capture=True
@@ -559,8 +565,9 @@ def install_esp_idf():
         idf_env["IDF_PATH"] = str(idf_dir)
 
         # Sourcing export.sh y capturando la versión
+        idf_q = shlex.quote(str(idf_dir))
         rc, out, err = run(
-            f'. {idf_dir}/export.sh && idf.py --version',
+            f'. {idf_q}/export.sh && idf.py --version',
             shell=True, capture=True,
             env={"HOME": str(Path.home()), "IDF_PATH": str(idf_dir)}
         )
@@ -610,8 +617,10 @@ def install_esp_matter():
         info("Ejecutando export.sh de ESP-Matter (inicializa Matter SDK)…")
         warn("Este paso puede tardar varios minutos la primera vez.")
         print()
+        idf_q    = shlex.quote(str(idf_dir))
+        matter_q = shlex.quote(str(matter_dir))
         rc, _, _ = run(
-            f'. {idf_dir}/export.sh && cd {matter_dir} && . ./export.sh',
+            f'. {idf_q}/export.sh && cd {matter_q} && . ./export.sh',
             shell=True, stream=True,
             env={"HOME": str(Path.home()), "IDF_PATH": str(idf_dir)}
         )
@@ -640,9 +649,12 @@ def test_matter_build():
         sys.exit(1)
 
     info("Configurando target esp32c6…")
+    idf_q    = shlex.quote(str(idf_dir))
+    matter_q = shlex.quote(str(matter_dir))
+    light_q  = shlex.quote(str(light_dir))
     rc, _, _ = run(
-        f'. {idf_dir}/export.sh && . {matter_dir}/export.sh && '
-        f'cd {light_dir} && idf.py set-target esp32c6',
+        f'. {idf_q}/export.sh && . {matter_q}/export.sh && '
+        f'cd {light_q} && idf.py set-target esp32c6',
         shell=True, stream=True,
         env={"HOME": str(Path.home()), "IDF_PATH": str(idf_dir)}
     )
@@ -654,8 +666,8 @@ def test_matter_build():
     info("Compilando ejemplo light (idf.py build) — puede tardar varios minutos…")
     print()
     rc, _, _ = run(
-        f'. {idf_dir}/export.sh && . {matter_dir}/export.sh && '
-        f'cd {light_dir} && idf.py build',
+        f'. {idf_q}/export.sh && . {matter_q}/export.sh && '
+        f'cd {light_q} && idf.py build',
         shell=True, stream=True,
         env={"HOME": str(Path.home()), "IDF_PATH": str(idf_dir)}
     )
