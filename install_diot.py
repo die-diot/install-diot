@@ -1215,6 +1215,88 @@ def install_matrix_mcu():
     mark_done("install_matrix_mcu")
 
 # ─────────────────────────────────────────────────
+#  PASO 13 — Compilar proyecto template de MatrixMCU
+# ─────────────────────────────────────────────────
+def test_matrix_mcu_build():
+    step_banner(13, TOTAL_STEPS, "Test compilación Matrix MCU — Proyecto template")
+
+    if is_done("test_matrix_mcu_build"):
+        success("Test de compilación Matrix MCU ya completado (checkpoint).")
+        return
+
+    matrix_mcu_dir = Path.home() / "MatrixMCU"
+    template_dir = matrix_mcu_dir / "projects" / "project_template"
+
+    # Si MatrixMCU no existe, clonarlo
+    if not matrix_mcu_dir.exists():
+        info(f"Clonando MatrixMCU en: {matrix_mcu_dir}")
+        print()
+        rc, _, _ = run(
+            ["git", "clone", "--progress", "--recursive",
+             "https://github.com/sdg2DieUpm/MatrixMCU.git",
+             str(matrix_mcu_dir)],
+            stream=True
+        )
+        if rc != 0:
+            error("No se pudo clonar MatrixMCU.")
+            sys.exit(1)
+        success("MatrixMCU clonado recursivamente.")
+    else:
+        info(f"MatrixMCU ya existe en: {matrix_mcu_dir}")
+
+    # Verificar que el proyecto template existe
+    if not template_dir.exists():
+        error(f"No se encontró proyecto template en: {template_dir}")
+        sys.exit(1)
+
+    info(f"Compilando proyecto template de MatrixMCU…")
+    info("Ubicación: " + str(template_dir))
+    print()
+
+    template_q = shlex.quote(str(template_dir))
+    
+    # Compilar: mkdir build, cd build, cmake .., ninja
+    rc, out, err = run_bash(
+        f'cd {template_q} && '
+        f'rm -rf build && '
+        f'mkdir -p build && '
+        f'cd build && '
+        f'cmake .. && '
+        f'ninja',
+        stream=True,
+        capture=True
+    )
+
+    if rc != 0:
+        error("Compilación del proyecto template de MatrixMCU falló.")
+        warn("Últimas líneas de error:")
+        error_lines = (out + err).strip().splitlines()[-15:]
+        for line in error_lines:
+            if line.strip():
+                print(c(YELLOW, f"  {line}"))
+        print()
+        sys.exit(1)
+
+    # Verificar que el binario fue creado
+    # El template típicamente genera un .elf en build/
+    build_dir = template_dir / "build"
+    elf_files = list(build_dir.glob("*.elf")) + list(build_dir.glob("**/*.elf"))
+
+    if not elf_files:
+        warn("Compilación exitosa pero no se encontró binario .elf")
+        warn(f"Archivos en {build_dir}:")
+        for f in sorted(build_dir.rglob("*"))[:10]:
+            if f.is_file():
+                print(c(DIM, f"    {f.relative_to(build_dir)}"))
+    else:
+        success(f"Binario compilado: {elf_files[0].name}")
+        success(f"Ubicación: {elf_files[0]}")
+
+    success("Test de compilación Matrix MCU completado con éxito.")
+    
+    mark_done("test_matrix_mcu_build")
+
+# ─────────────────────────────────────────────────
 #  Pantalla de bienvenida
 # ─────────────────────────────────────────────────
 def welcome():
@@ -1231,9 +1313,10 @@ def welcome():
     print(c(DIM, "    • Flash guiado en placa ESP32-C6"))
     print(c(DIM, "    • Configuración VS Code remoto WSL"))
     print(c(DIM, "    • Matrix MCU (Toolchain STM32) — OPCIONAL en el proceso"))
+    print(c(DIM, "    • Test compilación proyecto template MatrixMCU"))
     print()
-    print(c(YELLOW, "  ⏱  Tiempo estimado total: 45–75 minutos"))
-    print(c(YELLOW, "      (sin chip-tool compilation; Matrix MCU opcional)"))
+    print(c(YELLOW, "  ⏱  Tiempo estimado total: 50–85 minutos"))
+    print(c(YELLOW, "      (sin chip-tool; Matrix MCU + template test opcionales)"))
     print()
 
     if CHECKPOINT_FILE.exists():
@@ -1285,7 +1368,7 @@ def finish():
 # ─────────────────────────────────────────────────
 #  Número total de pasos (para la barra de progreso)
 # ─────────────────────────────────────────────────
-TOTAL_STEPS = 12
+TOTAL_STEPS = 13
 
 # ─────────────────────────────────────────────────
 #  Main
@@ -1307,6 +1390,7 @@ def main():
         guided_flash_light_example()
         configure_vscode_remote_wsl()
         install_matrix_mcu()
+        test_matrix_mcu_build()
     except KeyboardInterrupt:
         print()
         warn("Instalación interrumpida por el usuario.")
