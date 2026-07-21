@@ -813,46 +813,86 @@ def install_chip_tool():
     matter_q = shlex.quote(str(matter_dir))
     chip_q = shlex.quote(str(chip_dir))
 
+    # Verificar y completar submódulos de connectedhomeip (CRÍTICO para python_path)
+    info("Verificando integridad de submódulos de connectedhomeip (puede tardar)…")
+    rc, _, _ = run(
+        ["git", "submodule", "sync", "--recursive"],
+        cwd=str(chip_dir),
+        capture=True
+    )
+    if rc != 0:
+        warn("git submodule sync en connectedhomeip falló (puede ser normal si es repo compartido).")
+    
+    rc, _, _ = run(
+        ["git", "submodule", "update", "--init", "--recursive"],
+        cwd=str(chip_dir),
+        stream=True
+    )
+    if rc != 0:
+        warn("git submodule update falló en connectedhomeip. Continuando de todas formas…")
+    success("Submódulos de connectedhomeip verificados.")
+
     # Asegurarse de que GN está disponible
     ensure_gn_available(idf_dir, matter_dir)
 
-    # Ejecutar bootstrap nuevamente para asegurar PYTHONPATH correcto
-    info("Verificando entorno Matter (bootstrap para PYTHONPATH)…")
+    # Ejecutar bootstrap nuevamente en el directorio correcto
+    info("Ejecutando bootstrap en connectedhomeip para configurar entorno…")
     rc, _, _ = run_bash(
         f'cd {chip_q} && source scripts/bootstrap.sh >/dev/null 2>&1 || true',
         stream=False,
     )
 
-    # Configurar chip-tool con PYTHONPATH explícito
-    info("Generando configuración GN para chip-tool…")
+    # Intento 1: gn gen con argumentos personalizados
+    info("Generando configuración GN para chip-tool (intento 1 con --args)…")
     rc, out, err = run_bash(
-        f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && '
-        f'source {matter_q}/export.sh && '
         f'cd {chip_q} && '
-        f'export PYTHONPATH="{chip_q}/scripts:{chip_q}/third_party/python_modules:$PYTHONPATH" && '
+        f'source scripts/bootstrap.sh >/dev/null 2>&1 && '
         f'gn gen out/host --args="chip_build_tests=false"',
         capture=False,
         stream=True,
     )
-    if rc != 0:
-        # Reintento sin los argumentos extras (modo fallback)
-        warn("GN gen con argumentos personalizados falló. Intentando sin --args…")
+    if rc == 0:
+        success("Configuración GN generada para chip-tool.")
+    else:
+        # Intento 2: gn gen sin argumentos
+        warn("GN gen con --args falló. Reintentando sin argumentos (intento 2)…")
         rc, _, _ = run_bash(
-            f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && '
-            f'source {matter_q}/export.sh && '
             f'cd {chip_q} && '
-            f'export PYTHONPATH="{chip_q}/scripts:{chip_q}/third_party/python_modules:$PYTHONPATH" && '
+            f'source scripts/bootstrap.sh >/dev/null 2>&1 && '
             f'gn gen out/host',
             stream=True,
         )
-        if rc != 0:
-            error("GN gen para chip-tool falló incluso en fallback.")
-            warn("Causas comunes:")
-            warn("  • Submódulos de Matter incompletos (ejecuta: git submodule update --init --recursive)")
-            warn("  • Dependencias de build faltantes")
-            warn("  • PYTHONPATH corrupto")
-            sys.exit(1)
-    success("Configuración GN generada para chip-tool.")
+        if rc == 0:
+            success("Configuración GN generada para chip-tool (sin argumentos).")
+        else:
+            # Intento 3: usar venv y ser más explícito
+            warn("GN gen falló. Intento final (intento 3 con venv explícito)…")
+            rc, _, _ = run_bash(
+                f'cd {chip_q} && '
+                f'if [[ -d .environment/bin ]]; then source .environment/bin/activate; fi && '
+                f'gn gen out/host 2>&1 | head -50',
+                stream=True,
+            )
+            if rc != 0:
+                error("GN gen para chip-tool falló en todos los intentos.")
+                error("El problema es casi seguro: submódulos incompletos en connectedhomeip.")
+                warn("SOLUCIÓN MANUAL:")
+                warn(f"  cd {chip_q}")
+                warn("  git submodule update --init --recursive")
+                warn("  source scripts/bootstrap.sh")
+                warn("  gn gen out/host")
+                warn("  ninja chip-tool")
+                warn("")
+                warn("Alternativa: skipping chip-tool y continuando con el resto de pasos.")
+                
+                resp = input(c(CYAN, "  ¿Continuar sin chip-tool? (s) o abortar (n)? [s/N]: ")).strip().lower()
+                if resp == "s":
+                    warn("Saltando compilación de chip-tool. Puedes hacerlo manualmente después.")
+                    mark_done("install_chip_tool")
+                    return
+                else:
+                    sys.exit(1)
+            success("Configuración GN generada para chip-tool (venv explícito).")
 
     # Compilar chip-tool
     info("Compilando chip-tool con ninja (puede tardar 15-30 minutos)…")
