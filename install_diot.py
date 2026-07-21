@@ -523,7 +523,8 @@ def install_build_deps():
         "git", "wget", "flex", "bison", "gperf",
         "python3", "python3-pip", "python3-venv", "python3-setuptools",
         "cmake", "ninja-build", "ccache",
-        "libffi-dev", "libssl-dev", "dfu-util",
+        "pkg-config",  # CRÍTICO para chip-tool: necesario para scripts de GN
+        "libffi-dev", "libssl-dev", "libglib2.0-dev", "zlib1g-dev", "dfu-util",
         "libusb-1.0-0",
     ]
     info("Instalando paquetes: " + " ".join(packages))
@@ -865,25 +866,36 @@ def install_chip_tool():
         if rc == 0:
             success("Configuración GN generada para chip-tool (sin argumentos).")
         else:
-            # Intento 3: usar venv y ser más explícito
+            # Intento 3: usar venv y ser más explícito, con validación final
             warn("GN gen falló. Intento final (intento 3 con venv explícito)…")
-            rc, _, _ = run_bash(
+            rc, out, err = run_bash(
                 f'cd {chip_q} && '
                 f'if [[ -d .environment/bin ]]; then source .environment/bin/activate; fi && '
-                f'gn gen out/host 2>&1 | head -50',
-                stream=True,
+                f'gn gen out/host',
+                capture=True,
+                stream=False,
             )
             if rc != 0:
                 error("GN gen para chip-tool falló en todos los intentos.")
-                error("El problema es casi seguro: submódulos incompletos en connectedhomeip.")
-                warn("SOLUCIÓN MANUAL:")
-                warn(f"  cd {chip_q}")
-                warn("  git submodule update --init --recursive")
-                warn("  source scripts/bootstrap.sh")
-                warn("  gn gen out/host")
-                warn("  ninja chip-tool")
+                error("El problema es casi seguro: dependencias del sistema faltantes o submódulos incompletos.")
+                error("Errores detectados:")
+                # Mostrar los últimos 20 líneas del error
+                error_lines = (out + err).strip().splitlines()[-20:]
+                for line in error_lines:
+                    warn(f"  {line}")
                 warn("")
-                warn("Alternativa: skipping chip-tool y continuando con el resto de pasos.")
+                warn("SOLUCIONES POSIBLES:")
+                warn("1. Verifica que las dependencias están instaladas:")
+                warn("     sudo apt install -y pkg-config libssl-dev libglib2.0-dev zlib1g-dev")
+                warn("")
+                warn("2. Actualiza los submódulos de connectedhomeip:")
+                warn(f"   cd {chip_q}")
+                warn("   git submodule update --init --recursive")
+                warn("")
+                warn("3. Reinicia el bootstrap:")
+                warn("   source scripts/bootstrap.sh")
+                warn("   gn gen out/host")
+                warn("")
                 
                 resp = input(c(CYAN, "  ¿Continuar sin chip-tool? (s) o abortar (n)? [s/N]: ")).strip().lower()
                 if resp == "s":
@@ -892,9 +904,24 @@ def install_chip_tool():
                     return
                 else:
                     sys.exit(1)
+            
+            # Validar que build.ninja fue creado
+            build_ninja = chip_dir / "out" / "host" / "build.ninja"
+            if not build_ninja.exists():
+                error(f"GN gen reportó éxito pero build.ninja no existe en {build_ninja}.")
+                error("Este es un bug de GN. Verifica los logs en out/host/")
+                sys.exit(1)
+            
             success("Configuración GN generada para chip-tool (venv explícito).")
 
-    # Compilar chip-tool
+    # Compilar chip-tool (pero primero verificar que GN realmente generó build.ninja)
+    build_ninja = chip_dir / "out" / "host" / "build.ninja"
+    if not build_ninja.exists():
+        error(f"No se encontró build.ninja en {build_ninja}.")
+        error("Algo salió mal en la generación de configuración GN.")
+        warn(f"Verifica manualmente: cd {chip_q} && ls -la out/host/")
+        sys.exit(1)
+    
     info("Compilando chip-tool con ninja (puede tardar 15-30 minutos)…")
     rc, _, _ = run_bash(
         f'cd {chip_q}/out/host && ninja chip-tool',
