@@ -1181,30 +1181,36 @@ def install_matrix_mcu():
     info("Esto puede tardar 10-20 minutos…")
     print()
     
-    # Usar 'source' para que los cambios de PATH se apliquen en la sesión
-    rc, _, _ = run_bash(
-        f'cd {shlex.quote(str(matrix_mcu_dir))} && source ./{script_name}',
+    # Combinar en una sola sesión bash:
+    # 1. Ejecutar script de instalación
+    # 2. Hacer source ~/.bashrc para actualizar PATH
+    # 3. Verificar arm-none-eabi-gcc
+    # Esto asegura que los cambios de PATH se apliquen antes de verificar
+    matrix_mcu_q = shlex.quote(str(matrix_mcu_dir))
+    
+    rc, out_combined, err_combined = run_bash(
+        f'cd {matrix_mcu_q} && source ./{script_name} && '
+        f'source ~/.bashrc && '
+        f'arm-none-eabi-gcc --version 2>&1',
+        capture=True,
         stream=True
     )
     
     if rc != 0:
-        error("Instalación de Matrix MCU falló.")
+        error("Instalación de Matrix MCU o verificación falló.")
         warn(f"Intenta manualmente: cd {matrix_mcu_dir} && source {script_name}")
+        if out_combined or err_combined:
+            print(c(DIM, (out_combined + err_combined)[-500:]))  # Mostrar últimas 500 chars
         sys.exit(1)
     
     success("Matrix MCU instalado correctamente.")
 
-    # Verificar que arm-none-eabi-gcc funciona
-    info("Verificando arm-none-eabi-gcc…")
-    rc_verify, out_verify, _ = run_bash("arm-none-eabi-gcc --version", capture=True)
-    
-    if rc_verify == 0:
-        version_line = out_verify.strip().splitlines()[0] if out_verify.strip() else "OK"
-        success(f"arm-none-eabi-gcc operativo: {version_line[:60]}")
-    else:
-        warn("arm-none-eabi-gcc no responde aún. Puede requerir nueva sesión bash.")
-        warn("Ejecuta: source ~/.bashrc")
-        warn("Y luego: arm-none-eabi-gcc --version")
+    # Mostrar versión verificada
+    info("Verificado arm-none-eabi-gcc:")
+    version_lines = (out_combined + err_combined).strip().splitlines()
+    for line in version_lines[-3:]:
+        if line.strip():
+            success(f"  {line}")
 
     mark_done("install_matrix_mcu")
 
