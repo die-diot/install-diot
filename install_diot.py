@@ -537,6 +537,23 @@ def install_build_deps():
         print(c(DIM, err))
         sys.exit(1)
     success("Todas las dependencias de build instaladas.")
+    
+    # POST-VALIDACIÓN: Verificar que pkg-config existe (crítico para chip-tool)
+    info("Verificando que pkg-config se instaló correctamente…")
+    rc_pkg, pkg_path, _ = run_bash("which pkg-config", capture=True)
+    if rc_pkg != 0 or not pkg_path.strip():
+        warn("pkg-config no se instaló o no está en PATH. Intentando instalación forzada…")
+        rc_force, _, _ = run(
+            ["sudo", "apt", "install", "-y", "--reinstall", "pkg-config"],
+            capture=True
+        )
+        if rc_force == 0:
+            success("pkg-config re-instalado.")
+        else:
+            error("No se pudo instalar pkg-config. Verificar conexión a internet y repositorios.")
+            sys.exit(1)
+    else:
+        success(f"pkg-config disponible: {pkg_path.strip()}")
 
     mark_done("install_build_deps")
 
@@ -883,12 +900,16 @@ def install_chip_tool():
         success("Submódulos de connectedhomeip verificados (python_path encontrado).")
     else:
         warn(f"python_path.py NO encontrado en {chip_dir / 'third_party' / 'python_modules'}")
-        warn("Los submódulos pueden estar incompletos. Verificando alternativas…")
-        # Listar lo que existe
-        third_party = chip_dir / "third_party"
-        if third_party.exists():
-            contents = list(third_party.glob("*"))
-            warn(f"Contenido de third_party: {[c.name for c in contents[:10]]}")
+        warn("Los submódulos de connectedhomeip están INCOMPLETOS.")
+        print()
+        warn("Sin submódulos completos, es imposible compilar chip-tool.")
+        warn("Para arreglarlo manualmente:")
+        warn(f"  cd {shlex.quote(str(chip_dir))}")
+        warn("  git submodule update --init --recursive")
+        warn("")
+        warn("Saltando compilación de chip-tool…")
+        mark_done("install_chip_tool")
+        return
 
     # Asegurarse de que GN está disponible
     ensure_gn_available(idf_dir, matter_dir)
@@ -908,35 +929,25 @@ def install_chip_tool():
             if line.strip():
                 warn(f"  {line}")
     
-    # Verificar que pkg-config está en PATH post-bootstrap
-    info("Verificando disponibilidad de pkg-config…")
-    rc, pkg_path, _ = run_bash(
-        f'cd {chip_q} && source scripts/bootstrap.sh >/dev/null 2>&1 && which pkg-config',
+    # Verificar que pkg-config funciona (CRÍTICO - si falta, no hay forma de compilar)
+    info("Verificando que pkg-config funciona…")
+    rc_pkg_test, pkg_version, _ = run_bash(
+        f'cd {chip_q} && source scripts/bootstrap.sh >/dev/null 2>&1 && pkg-config --version',
         capture=True
     )
-    if rc == 0 and pkg_path.strip():
-        # Validar que es el binario real, no un archivo de autocompletar
-        pkg_candidate = pkg_path.strip()
-        is_real_binary = not pkg_candidate.endswith("bash-completion/completions/pkg-config")
-        if is_real_binary:
-            success(f"pkg-config disponible: {pkg_candidate}")
-        else:
-            warn(f"Falsa detección: {pkg_candidate} es un archivo de autocompletar, no el binario.")
-            pkg_path = ""
     
-    if not (rc == 0 and pkg_path.strip()):
-        warn("pkg-config NO está en PATH post-bootstrap. Buscando en sistema…")
-        # Buscar el binario real
-        rc_pkg, pkg_path_out, _ = run_bash(
-            'find /usr/bin -name pkg-config -type f 2>/dev/null | head -1',
-            capture=True
-        )
-        if rc_pkg == 0 and pkg_path_out.strip():
-            success(f"pkg-config encontrado: {pkg_path_out.strip()}")
-        else:
-            error("❌ pkg-config NO encontrado en el sistema.")
-            error("ACCIÓN REQUERIDA:")
-            error("  sudo apt install -y pkg-config")
+    if rc_pkg_test != 0:
+        error("❌ pkg-config NO funciona o no está disponible.")
+        error("")
+        error("Sin pkg-config, es imposible compilar chip-tool.")
+        error("Para arreglarlo manualmente:")
+        error("  sudo apt install -y pkg-config libssl-dev libglib2.0-dev")
+        error("")
+        warn("Saltando compilación de chip-tool…")
+        mark_done("install_chip_tool")
+        return
+    else:
+        success(f"pkg-config funciona: {pkg_version.strip()}")
 
     # Limpiar directorio out/host anterior si existe para evitar corrupción
     out_host = chip_dir / "out" / "host"
@@ -946,118 +957,55 @@ def install_chip_tool():
         if rc != 0:
             warn("No se pudo limpiar out/host (continuando de todas formas)")
 
-    # Intento 1: gn gen con argumentos personalizados y PATH explícito
-    info("Generando configuración GN para chip-tool (intento 1 con --args)…")
+    # Intento 1: gn gen estándar
+    info("Generando configuración GN para chip-tool…")
     rc, out, err = run_bash(
         f'cd {chip_q} && '
-        f'export PATH="/usr/bin:/usr/local/bin:$PATH" && '
-        f'source scripts/bootstrap.sh 2>&1 | tail -3 && '
-        f'gn gen out/host --args="chip_build_tests=false"',
-        capture=False,
-        stream=True,
+        f'source scripts/bootstrap.sh >/dev/null 2>&1 && '
+        f'gn gen out/host',
+        capture=True,
+        stream=False,
     )
-    if rc == 0:
-        success("Configuración GN generada para chip-tool.")
-    else:
-        # Intento 2: gn gen sin argumentos
-        warn("GN gen con --args falló. Reintentando sin argumentos (intento 2)…")
+    
+    if rc != 0:
+        # Intento 2: limpiar y reintentar
+        warn("GN gen falló en intento 1. Limpiando cache y reintentando…")
+        run_bash(f'cd {chip_q} && rm -rf .cipd-cache out/host >/dev/null 2>&1 || true', capture=True)
+        
         rc2, out2, err2 = run_bash(
             f'cd {chip_q} && '
-            f'export PATH="/usr/bin:/usr/local/bin:$PATH" && '
             f'source scripts/bootstrap.sh >/dev/null 2>&1 && '
             f'gn gen out/host',
             capture=True,
             stream=False,
         )
-        if rc2 == 0:
-            success("Configuración GN generada para chip-tool (sin argumentos).")
-        else:
-            # Intento 3: limpiar CIPD cache y reintentar con diagnóstico
-            warn("GN gen falló. Intento final (intento 3 limpiando CIPD cache)…")
-            rc3, out3, err3 = run_bash(
-                f'cd {chip_q} && '
-                f'rm -rf .cipd-cache >/dev/null 2>&1 || true && '
-                f'export PATH="/usr/bin:/usr/local/bin:$PATH" && '
-                f'source scripts/bootstrap.sh >/dev/null 2>&1 && '
-                f'gn gen out/host 2>&1',
-                capture=True,
-                stream=False,
-            )
-            
-            if rc3 != 0:
-                error("GN gen para chip-tool falló en todos los intentos.")
-                error("Diagnosticando problema…")
-                
-                # Diagnosticar qué salió mal
-                info("Verificando presencia de módulos Python…")
-                rc_diag, diag_out, _ = run_bash(
-                    f'cd {chip_q} && python3 -c "from third_party.python_modules.python_path import PythonPath"',
-                    capture=True
-                )
-                
-                root_cause = None
-                if rc_diag != 0:
-                    root_cause = "INCOMPLETE_SUBMODULES"
-                    error("❌ python_path.py no está accesible. Los submódulos están INCOMPLETOS.")
-                    error("")
-                    error("Para arreglarlo manualmente:")
-                    error(f"  cd {chip_q}")
-                    error("  git submodule update --init --recursive")
-                    error("  rm -rf out/host")
-                    error("  source scripts/bootstrap.sh")
-                    error("  gn gen out/host")
-                
-                # Diagnosticar pkg-config
-                if root_cause is None:
-                    rc_pkg, pkg_out, _ = run_bash(
-                        f'cd {chip_q} && source scripts/bootstrap.sh >/dev/null 2>&1 && pkg-config --version',
-                        capture=True
-                    )
-                    if rc_pkg != 0:
-                        root_cause = "MISSING_PKG_CONFIG"
-                        error("❌ pkg-config no está disponible o no funciona.")
-                        error("")
-                        error("Para arreglarlo manualmente:")
-                        error("  sudo apt install -y pkg-config libssl-dev")
-                
-                # Si no se identificó la causa, mostrar error genérico
-                if root_cause is None:
-                    error("No se pudo identificar la causa raíz. Mostrando output de GN:")
-                    error_lines = (out3 + err3).strip().splitlines()[-30:]
-                    for line in error_lines:
-                        if line.strip():
-                            warn(f"  {line}")
-                
-                # Ofrecer skip
-                print()
-                warn("chip-tool es necesario para commissioning Matter (alojamiento de nodos).")
-                warn("Sin chip-tool, no podrás hacer commissioning de tus dispositivos.")
-                print()
-                resp = input(c(CYAN, "  ¿Saltar compilación de chip-tool y continuar? (s/n) [n]: ")).strip().lower()
-                if resp == "s":
-                    warn("Saltando compilación de chip-tool.")
-                    warn("Puedes compilarlo manualmente después cuando resuelvas los problemas de dependencias.")
-                    mark_done("install_chip_tool")
-                    return
-                else:
-                    sys.exit(1)
-            
-            # Validar que build.ninja fue creado
-            build_ninja = chip_dir / "out" / "host" / "build.ninja"
-            if not build_ninja.exists():
-                error(f"GN gen reportó éxito pero build.ninja no existe en {build_ninja}.")
-                error("Este es un estado inconsistente. Verifica los logs en out/host/")
-                sys.exit(1)
-            
-            success("Configuración GN generada para chip-tool (intento 3).")
+        
+        if rc2 != 0:
+            # GN gen falló definitivamente
+            error("GN gen para chip-tool falló en ambos intentos.")
+            error("")
+            error("Salida del error:")
+            error_lines = (out2 + err2).strip().splitlines()[-20:]
+            for line in error_lines:
+                if line.strip():
+                    warn(f"  {line}")
+            error("")
+            error("Esto NO debería pasar (python_path.py y pkg-config fueron validados).")
+            error("Saltando compilación de chip-tool.")
+            mark_done("install_chip_tool")
+            return
+        
+        success("Configuración GN generada para chip-tool (intento 2).")
+    else:
+        success("Configuración GN generada para chip-tool.")
 
-    # Compilar chip-tool (pero primero verificar que GN realmente generó build.ninja)
+    # Verificar que build.ninja existe antes de compilar
     build_ninja = chip_dir / "out" / "host" / "build.ninja"
     if not build_ninja.exists():
-        error(f"No se encontró build.ninja en {build_ninja}.")
-        error("Algo salió mal en la generación de configuración GN.")
-        warn(f"Verifica manualmente: cd {chip_q} && ls -la out/host/")
-        sys.exit(1)
+        error(f"GN gen reportó éxito pero build.ninja no existe.")
+        error("Saltando compilación de chip-tool.")
+        mark_done("install_chip_tool")
+        return
     
     info("Compilando chip-tool con ninja (puede tardar 15-30 minutos)…")
     rc, _, _ = run_bash(
