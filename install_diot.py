@@ -816,16 +816,42 @@ def install_chip_tool():
     # Asegurarse de que GN está disponible
     ensure_gn_available(idf_dir, matter_dir)
 
-    # Configurar chip-tool
+    # Ejecutar bootstrap nuevamente para asegurar PYTHONPATH correcto
+    info("Verificando entorno Matter (bootstrap para PYTHONPATH)…")
     rc, _, _ = run_bash(
+        f'cd {chip_q} && source scripts/bootstrap.sh >/dev/null 2>&1 || true',
+        stream=False,
+    )
+
+    # Configurar chip-tool con PYTHONPATH explícito
+    info("Generando configuración GN para chip-tool…")
+    rc, out, err = run_bash(
         f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && '
         f'source {matter_q}/export.sh && '
-        f'cd {chip_q} && gn gen out/host --args="chip_build_tests=false"',
+        f'cd {chip_q} && '
+        f'export PYTHONPATH="{chip_q}/scripts:{chip_q}/third_party/python_modules:$PYTHONPATH" && '
+        f'gn gen out/host --args="chip_build_tests=false"',
+        capture=False,
         stream=True,
     )
     if rc != 0:
-        error("GN gen para chip-tool falló.")
-        sys.exit(1)
+        # Reintento sin los argumentos extras (modo fallback)
+        warn("GN gen con argumentos personalizados falló. Intentando sin --args…")
+        rc, _, _ = run_bash(
+            f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && '
+            f'source {matter_q}/export.sh && '
+            f'cd {chip_q} && '
+            f'export PYTHONPATH="{chip_q}/scripts:{chip_q}/third_party/python_modules:$PYTHONPATH" && '
+            f'gn gen out/host',
+            stream=True,
+        )
+        if rc != 0:
+            error("GN gen para chip-tool falló incluso en fallback.")
+            warn("Causas comunes:")
+            warn("  • Submódulos de Matter incompletos (ejecuta: git submodule update --init --recursive)")
+            warn("  • Dependencias de build faltantes")
+            warn("  • PYTHONPATH corrupto")
+            sys.exit(1)
     success("Configuración GN generada para chip-tool.")
 
     # Compilar chip-tool
@@ -836,6 +862,7 @@ def install_chip_tool():
     )
     if rc != 0:
         error("Compilación ninja de chip-tool falló.")
+        warn("Verifica: cd " + str(chip_q) + " && tail -100 out/host/build.log")
         sys.exit(1)
     success(f"chip-tool compilado exitosamente: {chiptool_bin}")
 
