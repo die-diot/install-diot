@@ -1105,12 +1105,116 @@ def configure_vscode_remote_wsl():
     mark_done("configure_vscode_remote_wsl")
 
 # ─────────────────────────────────────────────────
+#  PASO 12 — Instalar Matrix MCU (Toolchain ARM para STM32)
+# ─────────────────────────────────────────────────
+def install_matrix_mcu():
+    step_banner(12, TOTAL_STEPS, "Matrix MCU — Toolchain ARM para STM32 (opcional)")
+
+    if is_done("install_matrix_mcu"):
+        success("Matrix MCU ya instalado (checkpoint).")
+        return
+
+    print()
+    print(c(CYAN, "  ╔════════════════════════════════════════════════════╗"))
+    print(c(CYAN, "  ║  ¿Instalar Matrix MCU (Toolchain C ARM embebido)?  ║"))
+    print(c(CYAN, "  ╚════════════════════════════════════════════════════╝"))
+    print()
+    print(c(DIM, "  Matrix MCU proporciona herramientas de compilación cruzada para STM32:"))
+    print(c(DIM, "    • arm-none-eabi-gcc / arm-none-eabi-g++"))
+    print(c(DIM, "    • arm-none-eabi-gdb (debugging)"))
+    print(c(DIM, "    • OpenOCD (flash/debug)"))
+    print()
+    resp = input(c(CYAN, "  ¿Deseas instalar Matrix MCU? [s/N]: ")).strip().lower()
+    print()
+    
+    if resp not in ("s", "si", "sí", "y", "yes"):
+        info("Matrix MCU no instalado. Puedes instalarlo manualmente después ejecutando:")
+        info("  git clone https://github.com/sdg2DieUpm/install-MatrixMCU.git ~/install-MatrixMCU")
+        info("  cd ~/install-MatrixMCU && source ubuntu24.sh  # o ubuntu22.sh")
+        mark_done("install_matrix_mcu")
+        return
+
+    # Detectar versión de Ubuntu
+    os_info = Path("/etc/os-release").read_text() if Path("/etc/os-release").exists() else ""
+    ubuntu_major = 24  # default
+    ver_match = re.search(r'^VERSION_ID="?([^"\n]+)"?', os_info, re.M)
+    if ver_match:
+        try:
+            ubuntu_major = int(ver_match.group(1).split(".")[0])
+        except (ValueError, IndexError):
+            pass
+
+    info(f"Detectada Ubuntu {ubuntu_major}.")
+
+    # Clonar Matrix MCU en ~entornos/diot/install-MatrixMCU (hermana de install-diot)
+    install_diot_dir = Path.home() / "entornos" / "diot" / "install-diot"
+    parent_dir = install_diot_dir.parent  # ~/entornos/diot
+    matrix_mcu_dir = parent_dir / "install-MatrixMCU"
+
+    if matrix_mcu_dir.exists():
+        info(f"Repositorio Matrix MCU ya existe en: {matrix_mcu_dir}")
+    else:
+        info(f"Clonando Matrix MCU en: {matrix_mcu_dir}")
+        print()
+        rc, _, _ = run(
+            ["git", "clone", "--progress",
+             "https://github.com/sdg2DieUpm/install-MatrixMCU.git",
+             str(matrix_mcu_dir)],
+            stream=True
+        )
+        if rc != 0:
+            error("No se pudo clonar Matrix MCU.")
+            sys.exit(1)
+        success("Matrix MCU clonado.")
+
+    # Determinar script a ejecutar
+    script_name = f"ubuntu{ubuntu_major}.sh"
+    script_path = matrix_mcu_dir / script_name
+
+    if not script_path.exists():
+        error(f"Script {script_name} no existe en {matrix_mcu_dir}")
+        error(f"Matrix MCU disponibles para Ubuntu 22 y 24; detectaste Ubuntu {ubuntu_major}.")
+        sys.exit(1)
+
+    # Ejecutar script
+    info(f"Ejecutando {script_name} (instalará arm-none-eabi-gcc y herramientas)…")
+    info("Esto puede tardar 10-20 minutos…")
+    print()
+    
+    # Usar 'source' para que los cambios de PATH se apliquen en la sesión
+    rc, _, _ = run_bash(
+        f'cd {shlex.quote(str(matrix_mcu_dir))} && source ./{script_name}',
+        stream=True
+    )
+    
+    if rc != 0:
+        error("Instalación de Matrix MCU falló.")
+        warn(f"Intenta manualmente: cd {matrix_mcu_dir} && source {script_name}")
+        sys.exit(1)
+    
+    success("Matrix MCU instalado correctamente.")
+
+    # Verificar que arm-none-eabi-gcc funciona
+    info("Verificando arm-none-eabi-gcc…")
+    rc_verify, out_verify, _ = run_bash("arm-none-eabi-gcc --version", capture=True)
+    
+    if rc_verify == 0:
+        version_line = out_verify.strip().splitlines()[0] if out_verify.strip() else "OK"
+        success(f"arm-none-eabi-gcc operativo: {version_line[:60]}")
+    else:
+        warn("arm-none-eabi-gcc no responde aún. Puede requerir nueva sesión bash.")
+        warn("Ejecuta: source ~/.bashrc")
+        warn("Y luego: arm-none-eabi-gcc --version")
+
+    mark_done("install_matrix_mcu")
+
+# ─────────────────────────────────────────────────
 #  Pantalla de bienvenida
 # ─────────────────────────────────────────────────
 def welcome():
     header(
         "DIOT — Instalador Automático\n"
-        "usbipd · ESP-IDF v6.0.1 · ESP-Matter · chip-tool\n"
+        "usbipd · ESP-IDF v6.0.1 · ESP-Matter\n"
         "para Ubuntu 24+ en WSL 2"
     )
     print(c(DIM, "  Este script instalará automáticamente:"))
@@ -1118,10 +1222,12 @@ def welcome():
     print(c(DIM, "    • EIM — ESP-IDF Installation Manager"))
     print(c(DIM, "    • ESP-IDF v6.0.1 para ESP32-C6"))
     print(c(DIM, "    • ESP-Matter (Matter/Thread SDK)"))
-    print(c(DIM, "    • chip-tool (herramienta de commissioning Matter)"))
+    print(c(DIM, "    • Flash guiado en placa ESP32-C6"))
+    print(c(DIM, "    • Configuración VS Code remoto WSL"))
+    print(c(DIM, "    • Matrix MCU (Toolchain STM32) — OPCIONAL en el proceso"))
     print()
-    print(c(YELLOW, "  ⏱  Tiempo estimado total: 60–90 minutos"))
-    print(c(YELLOW, "      (Matter + chip-tool pueden tardar bastante)"))
+    print(c(YELLOW, "  ⏱  Tiempo estimado total: 45–75 minutos"))
+    print(c(YELLOW, "      (sin chip-tool compilation; Matrix MCU opcional)"))
     print()
 
     if CHECKPOINT_FILE.exists():
@@ -1173,7 +1279,7 @@ def finish():
 # ─────────────────────────────────────────────────
 #  Número total de pasos (para la barra de progreso)
 # ─────────────────────────────────────────────────
-TOTAL_STEPS = 11
+TOTAL_STEPS = 12
 
 # ─────────────────────────────────────────────────
 #  Main
@@ -1194,6 +1300,7 @@ def main():
         test_matter_build()
         guided_flash_light_example()
         configure_vscode_remote_wsl()
+        install_matrix_mcu()
     except KeyboardInterrupt:
         print()
         warn("Instalación interrumpida por el usuario.")
