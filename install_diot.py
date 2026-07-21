@@ -972,10 +972,34 @@ def configure_vscode_remote_wsl():
         if line not in existing_bashrc:
             existing_bashrc += ("\n" if existing_bashrc and not existing_bashrc.endswith("\n") else "") + line + "\n"
             appended = True
+
+    auto_load_begin = "# >>> DIOT ESP-IDF/Matter auto-load >>>"
+    auto_load_end = "# <<< DIOT ESP-IDF/Matter auto-load <<<"
+    auto_load_block = (
+        f"{auto_load_begin}\n"
+        'if [ -f "$IDF_PATH/export.sh" ]; then\n'
+        '  . "$IDF_PATH/export.sh" >/dev/null 2>&1\n'
+        'fi\n'
+        'if [ -f "$ESP_MATTER_PATH/export.sh" ]; then\n'
+        '  . "$ESP_MATTER_PATH/export.sh" >/dev/null 2>&1\n'
+        'fi\n'
+        f"{auto_load_end}\n"
+    )
+
+    if auto_load_begin in existing_bashrc and auto_load_end in existing_bashrc:
+        block_start = existing_bashrc.index(auto_load_begin)
+        block_end = existing_bashrc.index(auto_load_end, block_start) + len(auto_load_end)
+        if block_end < len(existing_bashrc) and existing_bashrc[block_end:block_end + 1] == "\n":
+            block_end += 1
+        existing_bashrc = existing_bashrc[:block_start] + auto_load_block + existing_bashrc[block_end:]
+        appended = True
+    elif auto_load_begin not in existing_bashrc:
+        existing_bashrc += ("\n" if existing_bashrc and not existing_bashrc.endswith("\n") else "") + auto_load_block
+        appended = True
+
     if appended:
         bashrc_path.write_text(existing_bashrc)
-        success("Variables IDF/Matter añadidas a ~/.bashrc para nuevas terminales WSL.")
-
+        success("Variables y auto-carga IDF/Matter añadidas a ~/.bashrc para nuevas terminales WSL.")
     settings_path = Path.home() / ".vscode-server" / "data" / "Machine" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
