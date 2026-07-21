@@ -871,45 +871,66 @@ def install_chip_tool():
         capture=True
     )
     if rc != 0:
-        warn("git submodule sync en connectedhomeip: " + _)
+        warn("git submodule sync: parcialmente completado (puede ser normal)")
     
     # Update CRÍTICO: fuerza descarga de todos los submódulos anidados
     info("Descargando submódulos recursivos (esto puede tardar 10-15 minutos)…")
+    
+    # Intento 1: con --depth para velocidad
     rc, out, err = run(
         ["git", "submodule", "update", "--init", "--recursive", "--depth", "1"],
         cwd=str(chip_dir),
         stream=True,
         capture=False
     )
+    
     if rc != 0:
-        # Reintentar sin --depth si es problema de clona parcial
-        warn("Reintentando submodule update sin --depth (clona completa)…")
+        # Intento 2: sin --depth para clona completa
+        warn("Reintentando submodule update sin --depth (clona completa, puede tardar)…")
         rc, out, err = run(
             ["git", "submodule", "update", "--init", "--recursive"],
             cwd=str(chip_dir),
             stream=True
         )
     
+    if rc != 0:
+        # Intento 3: forzar - limpiar y empezar de nuevo
+        warn("Limpiando submódulos y reintentando (intento final)…")
+        run_bash(f'cd {chip_q} && git submodule deinit -f . && git clean -ffd', capture=True)
+        rc, out, err = run(
+            ["git", "submodule", "update", "--init", "--recursive"],
+            cwd=str(chip_dir),
+            stream=True
+        )
+        if rc != 0:
+            error("CRÍTICO: No se pudieron descargar submódulos de connectedhomeip.")
+            error("El repositorio de ESP-Matter puede estar corrupto o inaccessible.")
+            error("Reintenta:")
+            error(f"  cd {shlex.quote(str(matter_dir))}")
+            error("  rm -rf .git/modules")
+            error("  git submodule update --init --recursive")
+            sys.exit(1)
+    
     # Verificar que python_path.py existe (indicador de que submódulos OK)
     python_path_check = chip_dir / "third_party" / "python_modules" / "python_path.py"
     if not python_path_check.exists():
-        # Buscar en otras localizaciones posibles
         python_path_check = chip_dir / "third_party" / "python_modules" / "python_path" / "python_path.py"
     
     if python_path_check.exists():
         success("Submódulos de connectedhomeip verificados (python_path encontrado).")
     else:
-        warn(f"python_path.py NO encontrado en {chip_dir / 'third_party' / 'python_modules'}")
-        warn("Los submódulos de connectedhomeip están INCOMPLETOS.")
-        print()
-        warn("Sin submódulos completos, es imposible compilar chip-tool.")
-        warn("Para arreglarlo manualmente:")
-        warn(f"  cd {shlex.quote(str(chip_dir))}")
-        warn("  git submodule update --init --recursive")
-        warn("")
-        warn("Saltando compilación de chip-tool…")
-        mark_done("install_chip_tool")
-        return
+        # ÚLTIMO RECURSO: Intento manual directo
+        warn("python_path.py aún no existe. Intentando descarga final manual…")
+        run_bash(f'cd {chip_q} && git fetch origin && git submodule update --init --recursive --force', capture=True)
+        
+        # Re-verificar
+        if not python_path_check.exists():
+            error("CRÍTICO: python_path.py NO SE ENCONTRÓ después de múltiples intentos.")
+            error("Esto indica un problema grave con los submódulos de connectedhomeip.")
+            error("El repositorio puede estar dañado o no accesible.")
+            sys.exit(1)
+        else:
+            success("Submódulos descargados en intento final.")
 
     # Asegurarse de que GN está disponible
     ensure_gn_available(idf_dir, matter_dir)
@@ -937,15 +958,31 @@ def install_chip_tool():
     )
     
     if rc_pkg_test != 0:
-        error("❌ pkg-config NO funciona o no está disponible.")
-        error("")
-        error("Sin pkg-config, es imposible compilar chip-tool.")
-        error("Para arreglarlo manualmente:")
-        error("  sudo apt install -y pkg-config libssl-dev libglib2.0-dev")
-        error("")
-        warn("Saltando compilación de chip-tool…")
-        mark_done("install_chip_tool")
-        return
+        warn("pkg-config NO funciona en ambiente de compilación.")
+        warn("Reintentando: reinstalando pkg-config…")
+        
+        rc_reinstall, _, _ = run(
+            ["sudo", "apt", "install", "-y", "--reinstall", "pkg-config"],
+            stream=False,
+            capture=True
+        )
+        
+        if rc_reinstall == 0:
+            info("pkg-config reinstalado. Verificando nuevamente…")
+            rc_pkg_test, pkg_version, _ = run_bash(
+                f'cd {chip_q} && source scripts/bootstrap.sh >/dev/null 2>&1 && pkg-config --version',
+                capture=True
+            )
+        
+        if rc_pkg_test != 0:
+            error("CRÍTICO: pkg-config NO funciona incluso después de reinstalar.")
+            error("Sin pkg-config, es imposible compilar chip-tool.")
+            error("Solución:")
+            error("  sudo apt install -y pkg-config libssl-dev libglib2.0-dev zlib1g-dev")
+            error("  sudo apt upgrade")
+            sys.exit(1)
+        else:
+            success(f"pkg-config funciona: {pkg_version.strip()}")
     else:
         success(f"pkg-config funciona: {pkg_version.strip()}")
 
@@ -981,19 +1018,39 @@ def install_chip_tool():
         )
         
         if rc2 != 0:
-            # GN gen falló definitivamente
+            # GN gen falló incluso después de limpiar
             error("GN gen para chip-tool falló en ambos intentos.")
             error("")
-            error("Salida del error:")
-            error_lines = (out2 + err2).strip().splitlines()[-20:]
+            error("Esto es anómalo (python_path.py y pkg-config fueron validados).")
+            error("Mostrando último error:")
+            error_lines = (out2 + err2).strip().splitlines()[-25:]
             for line in error_lines:
                 if line.strip():
                     warn(f"  {line}")
             error("")
-            error("Esto NO debería pasar (python_path.py y pkg-config fueron validados).")
-            error("Saltando compilación de chip-tool.")
-            mark_done("install_chip_tool")
-            return
+            error("Reintentando con bootstrap forzado…")
+            
+            # Intento 3: re-ejecutar bootstrap explícitamente
+            run_bash(f'cd {chip_q} && source scripts/bootstrap.sh', capture=True)
+            
+            rc3, out3, err3 = run_bash(
+                f'cd {chip_q} && gn gen out/host',
+                capture=True,
+                stream=False,
+            )
+            
+            if rc3 != 0:
+                error("GN gen FALLÓ EN TODOS LOS INTENTOS. Abortando.")
+                print()
+                print(c(RED, "═" * 60))
+                error("Último error:")
+                error_lines = (out3 + err3).strip().splitlines()[-30:]
+                for line in error_lines:
+                    if line.strip():
+                        print(c(RED, f"  {line}"))
+                print(c(RED, "═" * 60))
+                print()
+                sys.exit(1)
         
         success("Configuración GN generada para chip-tool (intento 2).")
     else:
@@ -1002,10 +1059,9 @@ def install_chip_tool():
     # Verificar que build.ninja existe antes de compilar
     build_ninja = chip_dir / "out" / "host" / "build.ninja"
     if not build_ninja.exists():
-        error(f"GN gen reportó éxito pero build.ninja no existe.")
-        error("Saltando compilación de chip-tool.")
-        mark_done("install_chip_tool")
-        return
+        error(f"CRÍTICO: GN gen reportó éxito pero build.ninja no existe en {build_ninja}.")
+        error("Este es un bug interno de GN. Abortando.")
+        sys.exit(1)
     
     info("Compilando chip-tool con ninja (puede tardar 15-30 minutos)…")
     rc, _, _ = run_bash(
@@ -1016,14 +1072,15 @@ def install_chip_tool():
         error("Compilación ninja de chip-tool falló.")
         warn("Verifica: cd " + str(chip_q) + " && tail -100 out/host/build.log")
         print()
-        warn("chip-tool es necesario para commissioning Matter.")
-        resp = input(c(CYAN, "  ¿Continuar sin chip-tool compilado? (s/n) [n]: ")).strip().lower()
-        if resp == "s":
-            warn("Saltando verificación de chip-tool.")
-            mark_done("install_chip_tool")
-            return
-        else:
-            sys.exit(1)
+        warn("Esto puede ser por:")
+        warn("  - Memoria insuficiente")
+        warn("  - Problemas de compilación en dependencias")
+        warn("  - Otros problemas del sistema")
+        print()
+        print(c(RED, "ERROR: No se puede continuar sin chip-tool compilado."))
+        print(c(RED, "Se requiere para commissioning de dispositivos Matter."))
+        print()
+        sys.exit(1)
     success(f"chip-tool compilado exitosamente: {chiptool_bin}")
 
     # Test rápido: verificar que funciona
