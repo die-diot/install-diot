@@ -641,6 +641,30 @@ def install_esp_matter():
         mark_done("clone_esp_matter")
 
     info("Asegurando submódulos de ESP-Matter (idempotente)…")
+    
+    # Validar que connectedhomeip existe (indicador de que clonación fue OK)
+    chip_submodule = matter_dir / "connectedhomeip" / "connectedhomeip"
+    if not chip_submodule.exists():
+        error(f"connectedhomeip NO existe en {chip_submodule}")
+        error("La clonación de ESP-Matter probablemente falló (submódulo no descargado).")
+        error("Intentando re-clonar ESP-Matter con submódulos…")
+        if matter_dir.exists():
+            warn(f"Eliminando {matter_dir} para re-clonar…")
+            run_bash(f'rm -rf {shlex.quote(str(matter_dir))}', capture=True)
+        
+        info("Re-clonando ESP-Matter con submódulos recursivos…")
+        rc, _, _ = run(
+            ["git", "clone", "--progress",
+             "--recursive", "--depth", "1",
+             "https://github.com/espressif/esp-matter.git",
+             str(matter_dir)],
+            stream=True
+        )
+        if rc != 0:
+            error("Re-clonación de ESP-Matter falló.")
+            sys.exit(1)
+        success("ESP-Matter re-clonado.")
+    
     rc, _, _ = run(["git", "submodule", "sync", "--recursive"], cwd=str(matter_dir), stream=True)
     if rc != 0:
         error("git submodule sync falló en ESP-Matter.")
@@ -649,6 +673,12 @@ def install_esp_matter():
     rc, _, _ = run(["git", "submodule", "update", "--init", "--recursive"], cwd=str(matter_dir), stream=True)
     if rc != 0:
         error("git submodule update --init --recursive falló en ESP-Matter.")
+        sys.exit(1)
+    
+    # Post-validación: connectedhomeip debe existir ahora
+    if not chip_submodule.exists():
+        error(f"Después de submodule update, connectedhomeip SIGUE no existiendo.")
+        error("Esto indica un problema con el repositorio de ESP-Matter o permisos de git.")
         sys.exit(1)
 
     if is_done("export_esp_matter"):
@@ -885,19 +915,28 @@ def install_chip_tool():
         capture=True
     )
     if rc == 0 and pkg_path.strip():
-        success(f"pkg-config disponible: {pkg_path.strip()}")
-    else:
-        warn("pkg-config NO está en PATH post-bootstrap. Intentando agregar manualmente…")
-        # pkg-config debería estar disponible si se instaló, pero puede no estar en PATH
-        # Intentaremos encontrarlo
-        rc, pkg_path_out, _ = run_bash(
-            'find /usr -name pkg-config -type f 2>/dev/null | head -1',
+        # Validar que es el binario real, no un archivo de autocompletar
+        pkg_candidate = pkg_path.strip()
+        is_real_binary = not pkg_candidate.endswith("bash-completion/completions/pkg-config")
+        if is_real_binary:
+            success(f"pkg-config disponible: {pkg_candidate}")
+        else:
+            warn(f"Falsa detección: {pkg_candidate} es un archivo de autocompletar, no el binario.")
+            pkg_path = ""
+    
+    if not (rc == 0 and pkg_path.strip()):
+        warn("pkg-config NO está en PATH post-bootstrap. Buscando en sistema…")
+        # Buscar el binario real
+        rc_pkg, pkg_path_out, _ = run_bash(
+            'find /usr/bin -name pkg-config -type f 2>/dev/null | head -1',
             capture=True
         )
-        if rc == 0 and pkg_path_out.strip():
-            warn(f"Found pkg-config at: {pkg_path_out.strip()}")
+        if rc_pkg == 0 and pkg_path_out.strip():
+            success(f"pkg-config encontrado: {pkg_path_out.strip()}")
         else:
-            error("pkg-config no encontrado en el sistema. Verifica la instalación de dependencias.")
+            error("❌ pkg-config NO encontrado en el sistema.")
+            error("ACCIÓN REQUERIDA:")
+            error("  sudo apt install -y pkg-config")
 
     # Limpiar directorio out/host anterior si existe para evitar corrupción
     out_host = chip_dir / "out" / "host"
@@ -955,35 +994,53 @@ def install_chip_tool():
                     f'cd {chip_q} && python3 -c "from third_party.python_modules.python_path import PythonPath"',
                     capture=True
                 )
+                
+                root_cause = None
                 if rc_diag != 0:
+                    root_cause = "INCOMPLETE_SUBMODULES"
                     error("❌ python_path.py no está accesible. Los submódulos están INCOMPLETOS.")
-                    error("ACCIÓN REQUERIDA:")
+                    error("")
+                    error("Para arreglarlo manualmente:")
                     error(f"  cd {chip_q}")
                     error("  git submodule update --init --recursive")
                     error("  rm -rf out/host")
                     error("  source scripts/bootstrap.sh")
                     error("  gn gen out/host")
-                    sys.exit(1)
                 
                 # Diagnosticar pkg-config
-                rc_pkg, pkg_out, _ = run_bash(
-                    f'cd {chip_q} && source scripts/bootstrap.sh >/dev/null 2>&1 && pkg-config --version',
-                    capture=True
-                )
-                if rc_pkg != 0:
-                    error("❌ pkg-config no está disponible o no funciona.")
-                    error("ACCIÓN REQUERIDA:")
-                    error("  sudo apt install -y pkg-config libssl-dev")
+                if root_cause is None:
+                    rc_pkg, pkg_out, _ = run_bash(
+                        f'cd {chip_q} && source scripts/bootstrap.sh >/dev/null 2>&1 && pkg-config --version',
+                        capture=True
+                    )
+                    if rc_pkg != 0:
+                        root_cause = "MISSING_PKG_CONFIG"
+                        error("❌ pkg-config no está disponible o no funciona.")
+                        error("")
+                        error("Para arreglarlo manualmente:")
+                        error("  sudo apt install -y pkg-config libssl-dev")
+                
+                # Si no se identificó la causa, mostrar error genérico
+                if root_cause is None:
+                    error("No se pudo identificar la causa raíz. Mostrando output de GN:")
+                    error_lines = (out3 + err3).strip().splitlines()[-30:]
+                    for line in error_lines:
+                        if line.strip():
+                            warn(f"  {line}")
+                
+                # Ofrecer skip
+                print()
+                warn("chip-tool es necesario para commissioning Matter (alojamiento de nodos).")
+                warn("Sin chip-tool, no podrás hacer commissioning de tus dispositivos.")
+                print()
+                resp = input(c(CYAN, "  ¿Saltar compilación de chip-tool y continuar? (s/n) [n]: ")).strip().lower()
+                if resp == "s":
+                    warn("Saltando compilación de chip-tool.")
+                    warn("Puedes compilarlo manualmente después cuando resuelvas los problemas de dependencias.")
+                    mark_done("install_chip_tool")
+                    return
+                else:
                     sys.exit(1)
-                
-                # Mostrar el error real de GN
-                error("Error desde GN:")
-                error_lines = (out3 + err3).strip().splitlines()[-25:]
-                for line in error_lines:
-                    if line.strip():
-                        warn(f"  {line}")
-                
-                sys.exit(1)
             
             # Validar que build.ninja fue creado
             build_ninja = chip_dir / "out" / "host" / "build.ninja"
@@ -1010,7 +1067,15 @@ def install_chip_tool():
     if rc != 0:
         error("Compilación ninja de chip-tool falló.")
         warn("Verifica: cd " + str(chip_q) + " && tail -100 out/host/build.log")
-        sys.exit(1)
+        print()
+        warn("chip-tool es necesario para commissioning Matter.")
+        resp = input(c(CYAN, "  ¿Continuar sin chip-tool compilado? (s/n) [n]: ")).strip().lower()
+        if resp == "s":
+            warn("Saltando verificación de chip-tool.")
+            mark_done("install_chip_tool")
+            return
+        else:
+            sys.exit(1)
     success(f"chip-tool compilado exitosamente: {chiptool_bin}")
 
     # Test rápido: verificar que funciona
