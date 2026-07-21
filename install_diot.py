@@ -1278,18 +1278,19 @@ def test_matrix_mcu_build():
         sys.exit(1)
 
     # Verificar que el binario fue creado
-    # El template típicamente genera un .elf en build/
+    # MatrixMCU genera .elf en: bin/stm32f446re/Debug/ (no en build/)
     build_dir = template_dir / "build"
-    elf_files = list(build_dir.glob("*.elf")) + list(build_dir.glob("**/*.elf"))
+    bin_dir = template_dir / "bin"
+    
+    # Buscar .elf en todo el directorio del template
+    elf_files = list(template_dir.glob("**/*.elf"))
 
     if not elf_files:
-        # No se encontró .elf, mostrar output completo de cmake/ninja para debugging
+        # No se encontró .elf
         warn("⚠ Compilación ejecutó sin errores (rc=0) pero no se encontró .elf")
-        warn("Esto sugiere que cmake o ninja no compiló realmente el proyecto.")
-        warn("\nOutput de cmake/ninja:")
-        for line in (out + err).strip().splitlines():
-            if line.strip():
-                print(c(DIM, f"  {line}"))
+        warn("Directorios esperados:")
+        print(c(DIM, f"    {build_dir}"))
+        print(c(DIM, f"    {bin_dir}"))
         warn(f"\nArchivos generados en {build_dir}:")
         for f in sorted(build_dir.rglob("*"))[:15]:
             if f.is_file():
@@ -1298,8 +1299,10 @@ def test_matrix_mcu_build():
         error("No se pudo verificar compilación (no hay .elf)")
         sys.exit(1)
     else:
-        success(f"Binario compilado: {elf_files[0].name}")
-        success(f"Ubicación: {elf_files[0]}")
+        success(f"✓ Binarios compilados exitosamente:")
+        for elf in elf_files:
+            success(f"  • {elf.relative_to(template_dir)}")
+        
         success("Test de compilación Matrix MCU completado con éxito.")
     
     mark_done("test_matrix_mcu_build")
