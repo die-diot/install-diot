@@ -775,6 +775,88 @@ def test_matter_build():
 
     mark_done("test_matter_build")
 
+# ─────────────────────────────────────────────────
+#  PASO 10 — Compilar chip-tool para commissioning
+# ─────────────────────────────────────────────────
+def install_chip_tool():
+    step_banner(10, TOTAL_STEPS, "Compilar chip-tool para commissioning Matter")
+
+    if is_done("install_chip_tool"):
+        success("chip-tool ya compilado (checkpoint).")
+        return
+
+    idf_dir    = Path.home() / "esp" / "esp-idf"
+    matter_dir = Path.home() / "esp" / "esp-matter"
+    chip_dir   = matter_dir / "connectedhomeip" / "connectedhomeip"
+    chiptool_bin = chip_dir / "out" / "host" / "chip-tool"
+
+    if not chip_dir.exists():
+        error(f"No se encontró el directorio connectedhomeip: {chip_dir}")
+        sys.exit(1)
+
+    if chiptool_bin.exists():
+        success(f"chip-tool ya existe en: {chiptool_bin}")
+        # Verificar que funciona
+        rc, out, err = run([str(chiptool_bin), "--version"], capture=True)
+        if rc == 0:
+            success(f"chip-tool funciona: {(out + err).strip()[:60]}")
+            mark_done("install_chip_tool")
+            return
+        else:
+            info("chip-tool existe pero no responde. Recompilando…")
+
+    info("Compilando chip-tool desde connectedhomeip…")
+    print(c(DIM, "  (esto puede tardar 15-30 minutos la primera vez)"))
+    print()
+
+    idf_q = shlex.quote(str(idf_dir))
+    matter_q = shlex.quote(str(matter_dir))
+    chip_q = shlex.quote(str(chip_dir))
+
+    # Asegurarse de que GN está disponible
+    ensure_gn_available(idf_dir, matter_dir)
+
+    # Configurar chip-tool
+    rc, _, _ = run_bash(
+        f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && '
+        f'source {matter_q}/export.sh && '
+        f'cd {chip_q} && gn gen out/host --args="chip_build_tests=false"',
+        stream=True,
+    )
+    if rc != 0:
+        error("GN gen para chip-tool falló.")
+        sys.exit(1)
+    success("Configuración GN generada para chip-tool.")
+
+    # Compilar chip-tool
+    info("Compilando chip-tool con ninja (puede tardar 15-30 minutos)…")
+    rc, _, _ = run_bash(
+        f'cd {chip_q}/out/host && ninja chip-tool',
+        stream=True,
+    )
+    if rc != 0:
+        error("Compilación ninja de chip-tool falló.")
+        sys.exit(1)
+    success(f"chip-tool compilado exitosamente: {chiptool_bin}")
+
+    # Test rápido: verificar que funciona
+    info("Verificando que chip-tool funciona…")
+    rc, out, err = run([str(chiptool_bin), "--version"], capture=True)
+    if rc == 0:
+        version_line = (out + err).strip().splitlines()[0] if (out + err).strip() else "OK"
+        success(f"chip-tool operativo: {version_line[:60]}")
+    else:
+        warn("chip-tool compilado pero no responde a --version. Continuando de todas formas.")
+
+    # Test adicional: Help (commissioning subcommands)
+    info("Verificando subcomandos de commissioning…")
+    rc, out, err = run([str(chiptool_bin), "pairing", "help"], capture=True)
+    if rc == 0 and "ble-wifi" in (out + err):
+        success("Subcomandos de commissioning disponibles (ble-wifi detectado).")
+    else:
+        warn("No se confirmaron subcomandos BLE. Compilación podría estar incompleta.")
+
+    mark_done("install_chip_tool")
 
 
 def ensure_dialout_access():
@@ -812,10 +894,10 @@ def ensure_dialout_access():
     return "restart_required"
 
 # ─────────────────────────────────────────────────
-#  PASO 10 — Flash guiado en placa ESP32-C6
+#  PASO 11 — Flash guiado en placa ESP32-C6
 # ─────────────────────────────────────────────────
 def guided_flash_light_example():
-    step_banner(10, TOTAL_STEPS, "Flash guiado en placa ESP32-C6")
+    step_banner(11, TOTAL_STEPS, "Flash guiado en placa ESP32-C6")
 
     if is_done("guided_flash_light_example"):
         success("Flash guiado ya completado (checkpoint).")
@@ -913,10 +995,10 @@ def guided_flash_light_example():
 
 
 # ─────────────────────────────────────────────────
-#  PASO 11 — Configurar VS Code remoto (WSL)
+#  PASO 12 — Configurar VS Code remoto (WSL)
 # ─────────────────────────────────────────────────
 def configure_vscode_remote_wsl():
-    step_banner(11, TOTAL_STEPS, "Configurar VS Code remoto (WSL)")
+    step_banner(12, TOTAL_STEPS, "Configurar VS Code remoto (WSL)")
 
     if is_done("configure_vscode_remote_wsl"):
         warn("Paso 11 ya estaba marcado, pero se revalidará la configuración VS Code para aplicar correcciones.")
@@ -1061,7 +1143,7 @@ def configure_vscode_remote_wsl():
 def welcome():
     header(
         "DIOT — Instalador Automático\n"
-        "usbipd · ESP-IDF v6.0.1 · ESP-Matter\n"
+        "usbipd · ESP-IDF v6.0.1 · ESP-Matter · chip-tool\n"
         "para Ubuntu 24+ en WSL 2"
     )
     print(c(DIM, "  Este script instalará automáticamente:"))
@@ -1069,9 +1151,10 @@ def welcome():
     print(c(DIM, "    • EIM — ESP-IDF Installation Manager"))
     print(c(DIM, "    • ESP-IDF v6.0.1 para ESP32-C6"))
     print(c(DIM, "    • ESP-Matter (Matter/Thread SDK)"))
+    print(c(DIM, "    • chip-tool (herramienta de commissioning Matter)"))
     print()
-    print(c(YELLOW, "  ⏱  Tiempo estimado total: 30–60 minutos"))
-    print(c(YELLOW, "      (la descarga de Matter puede tardar bastante)"))
+    print(c(YELLOW, "  ⏱  Tiempo estimado total: 60–90 minutos"))
+    print(c(YELLOW, "      (Matter + chip-tool pueden tardar bastante)"))
     print()
 
     if CHECKPOINT_FILE.exists():
@@ -1123,7 +1206,7 @@ def finish():
 # ─────────────────────────────────────────────────
 #  Número total de pasos (para la barra de progreso)
 # ─────────────────────────────────────────────────
-TOTAL_STEPS = 11
+TOTAL_STEPS = 12
 
 # ─────────────────────────────────────────────────
 #  Main
@@ -1142,6 +1225,7 @@ def main():
         install_esp_idf()
         install_esp_matter()
         test_matter_build()
+        install_chip_tool()
         guided_flash_light_example()
         configure_vscode_remote_wsl()
     except KeyboardInterrupt:
