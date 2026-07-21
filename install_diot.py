@@ -1255,22 +1255,22 @@ def test_matrix_mcu_build():
 
     template_q = shlex.quote(str(template_dir))
     
-    # Compilar: mkdir build, cd build, cmake -G Ninja .., ninja
+    # Compilar: mkdir build, cd build, cmake -G Ninja .., ninja -v
     rc, out, err = run_bash(
         f'cd {template_q} && '
         f'rm -rf build && '
         f'mkdir -p build && '
         f'cd build && '
-        f'cmake -G Ninja .. && '
-        f'ninja',
+        f'cmake -G Ninja .. 2>&1 && '
+        f'ninja -v',
         stream=True,
         capture=True
     )
 
     if rc != 0:
         error("Compilación del proyecto template de MatrixMCU falló.")
-        warn("Últimas líneas de error:")
-        error_lines = (out + err).strip().splitlines()[-15:]
+        warn("Output de cmake/ninja:")
+        error_lines = (out + err).strip().splitlines()[-20:]
         for line in error_lines:
             if line.strip():
                 print(c(YELLOW, f"  {line}"))
@@ -1283,16 +1283,24 @@ def test_matrix_mcu_build():
     elf_files = list(build_dir.glob("*.elf")) + list(build_dir.glob("**/*.elf"))
 
     if not elf_files:
-        warn("Compilación exitosa pero no se encontró binario .elf")
-        warn(f"Archivos en {build_dir}:")
-        for f in sorted(build_dir.rglob("*"))[:10]:
+        # No se encontró .elf, mostrar output completo de cmake/ninja para debugging
+        warn("⚠ Compilación ejecutó sin errores (rc=0) pero no se encontró .elf")
+        warn("Esto sugiere que cmake o ninja no compiló realmente el proyecto.")
+        warn("\nOutput de cmake/ninja:")
+        for line in (out + err).strip().splitlines():
+            if line.strip():
+                print(c(DIM, f"  {line}"))
+        warn(f"\nArchivos generados en {build_dir}:")
+        for f in sorted(build_dir.rglob("*"))[:15]:
             if f.is_file():
                 print(c(DIM, f"    {f.relative_to(build_dir)}"))
+        
+        error("No se pudo verificar compilación (no hay .elf)")
+        sys.exit(1)
     else:
         success(f"Binario compilado: {elf_files[0].name}")
         success(f"Ubicación: {elf_files[0]}")
-
-    success("Test de compilación Matrix MCU completado con éxito.")
+        success("Test de compilación Matrix MCU completado con éxito.")
     
     mark_done("test_matrix_mcu_build")
 
