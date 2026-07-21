@@ -1255,13 +1255,13 @@ def test_matrix_mcu_build():
 
     template_q = shlex.quote(str(template_dir))
     
-    # Compilar: mkdir build, cd build, cmake .., ninja
+    # Compilar: mkdir build, cd build, cmake -G Ninja .., ninja
     rc, out, err = run_bash(
         f'cd {template_q} && '
         f'rm -rf build && '
         f'mkdir -p build && '
         f'cd build && '
-        f'cmake .. && '
+        f'cmake -G Ninja .. && '
         f'ninja',
         stream=True,
         capture=True
