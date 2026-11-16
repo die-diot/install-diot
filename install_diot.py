@@ -5,8 +5,10 @@
 ║         DIOT — Instalador Automático             ║
 ║  usbipd · ESP-IDF v6.0.1 · ESP-Matter           ║
 ╚══════════════════════════════════════════════════╝
-Uso: python3 install_diot.py
-     (o directamente: ./install_diot.py)
+Uso:
+  python3 install_diot.py                 instalación completa, desatendida
+  python3 install_diot.py --probar-placa  flashea una placa y comprueba que arranca
+  python3 install_diot.py --desde-cero    ignora los checkpoints guardados
 """
 
 import sys
@@ -19,6 +21,7 @@ import json
 import re
 import shutil
 import grp
+import argparse
 from pathlib import Path
 
 # ─────────────────────────────────────────────────
@@ -30,6 +33,11 @@ WINGET_USBIPD_CMD = (
     "winget install --id dorssel.usbipd-win -e "
     "--accept-source-agreements --accept-package-agreements"
 )
+
+# Versión de ESP-Matter fijada: la misma con la que se han probado los
+# proyectos de la asignatura. Cambiarla aquí si se actualiza el SDK.
+ESP_MATTER_COMMIT = "a1ae4f06a8ab80c757c3389653a5b26e51d11c8a"
+ESPRESSIF_USB_VID = "303a"
 
 RESET   = "\033[0m"
 BOLD    = "\033[1m"
@@ -574,11 +582,12 @@ def install_esp_idf():
         if idf_dir.exists():
             warn(f"{idf_dir} ya existe. Usando el directorio existente.")
         else:
-            info(f"Clonando ESP-IDF {idf_version} (con submódulos — puede tardar)…")
+            info(f"Clonando ESP-IDF {idf_version} (solo esa versión, sin historial)…")
             print()
             rc, _, _ = run(
                 ["git", "clone", "--progress",
                  "-b", idf_version, "--recursive",
+                 "--depth", "1", "--shallow-submodules",
                  "https://github.com/espressif/esp-idf.git",
                  str(idf_dir)],
                 stream=True
@@ -628,91 +637,72 @@ def install_esp_idf():
 #  PASO 8 — Clonar e inicializar ESP-Matter
 # ─────────────────────────────────────────────────
 def install_esp_matter():
-    step_banner(8, TOTAL_STEPS, "Instalar ESP-Matter (proceso largo ~30 min)")
+    step_banner(8, TOTAL_STEPS, "Instalar ESP-Matter (versión fijada, ~15 min)")
 
     esp_dir    = Path.home() / "esp"
     matter_dir = esp_dir / "esp-matter"
     idf_dir    = esp_dir / "esp-idf"
 
+    matter_q = shlex.quote(str(matter_dir))
+    chip_dir = matter_dir / "connectedhomeip" / "connectedhomeip"
+
     if is_done("clone_esp_matter"):
         success("ESP-Matter ya clonado (checkpoint).")
     else:
         esp_dir.mkdir(parents=True, exist_ok=True)
-        if matter_dir.exists():
-            warn(f"{matter_dir} ya existe. Usando el directorio existente.")
+        if (matter_dir / ".git").exists():
+            warn(f"{matter_dir} ya existe. Se usará tal cual (no se cambia de versión).")
         else:
-            warn("ESP-Matter tiene muchos submódulos. La descarga puede tardar 30+ minutos.")
-            info("Clonando ESP-Matter con submódulos recursivos…")
-            print()
-            rc, _, _ = run(
-                ["git", "clone", "--progress",
-                 "--recursive",
-                 "https://github.com/espressif/esp-matter.git",
-                 str(matter_dir)],
-                stream=True
+            info(f"Descargando ESP-Matter {ESP_MATTER_COMMIT[:8]} (solo esa versión, sin historial)…")
+            matter_dir.mkdir(parents=True, exist_ok=True)
+            rc, _, _ = run_bash(
+                f'cd {matter_q} && git init -q && '
+                f'git remote add origin https://github.com/espressif/esp-matter.git && '
+                f'git fetch --progress --depth 1 origin {ESP_MATTER_COMMIT} && '
+                f'git checkout -q FETCH_HEAD',
+                stream=True,
             )
             if rc != 0:
-                error("No se pudo clonar ESP-Matter.")
+                error("No se pudo descargar ESP-Matter.")
                 sys.exit(1)
-            success("ESP-Matter clonado.")
-        mark_done("clone_esp_matter")
-
-    info("Asegurando submódulos de ESP-Matter (idempotente)…")
-    
-    # Validar que connectedhomeip existe (indicador de que clonación fue OK)
-    chip_submodule = matter_dir / "connectedhomeip" / "connectedhomeip"
-    if not chip_submodule.exists():
-        error(f"connectedhomeip NO existe en {chip_submodule}")
-        error("La clonación de ESP-Matter probablemente falló (submódulo no descargado).")
-        error("Intentando re-clonar ESP-Matter con submódulos…")
-        if matter_dir.exists():
-            warn(f"Eliminando {matter_dir} para re-clonar…")
-            run_bash(f'rm -rf {shlex.quote(str(matter_dir))}', capture=True)
-        
-        info("Re-clonando ESP-Matter con submódulos recursivos…")
+        info("Descargando connectedhomeip (submódulo principal, sin historial)…")
+        rc, _, _ = run(["git", "submodule", "update", "--init", "--depth", "1"],
+                       cwd=str(matter_dir), stream=True)
+        if rc != 0:
+            error("git submodule update falló en ESP-Matter.")
+            sys.exit(1)
+        # Solo los submódulos que necesita ESP32 (y Linux para las herramientas
+        # de build). Es lo que recomienda Espressif y ahorra decenas de GB.
+        info("Descargando submódulos de connectedhomeip solo para esp32 y linux…")
         rc, _, _ = run(
-            ["git", "clone", "--progress",
-             "--recursive", "--depth", "1",
-             "https://github.com/espressif/esp-matter.git",
-             str(matter_dir)],
-            stream=True
+            ["python3", "scripts/checkout_submodules.py",
+             "--platform", "esp32", "linux", "--shallow"],
+            cwd=str(chip_dir), stream=True,
         )
         if rc != 0:
-            error("Re-clonación de ESP-Matter falló.")
+            error("checkout_submodules.py falló.")
             sys.exit(1)
-        success("ESP-Matter re-clonado.")
-    
-    rc, _, _ = run(["git", "submodule", "sync", "--recursive"], cwd=str(matter_dir), stream=True)
-    if rc != 0:
-        error("git submodule sync falló en ESP-Matter.")
-        sys.exit(1)
+        success("ESP-Matter descargado.")
+        mark_done("clone_esp_matter")
 
-    rc, _, _ = run(["git", "submodule", "update", "--init", "--recursive"], cwd=str(matter_dir), stream=True)
-    if rc != 0:
-        error("git submodule update --init --recursive falló en ESP-Matter.")
-        sys.exit(1)
-    
-    # Post-validación: connectedhomeip debe existir ahora
-    if not chip_submodule.exists():
-        error(f"Después de submodule update, connectedhomeip SIGUE no existiendo.")
-        error("Esto indica un problema con el repositorio de ESP-Matter o permisos de git.")
+    if not chip_dir.exists():
+        error(f"No existe {chip_dir}. Borra {matter_dir}, ejecuta con --desde-cero y reintenta.")
         sys.exit(1)
 
     if is_done("export_esp_matter"):
-        success("ESP-Matter ya exportado/inicializado (checkpoint).")
+        success("ESP-Matter ya inicializado (checkpoint).")
     else:
-        info("Ejecutando export.sh de ESP-Matter (inicializa Matter SDK)…")
-        warn("Este paso puede tardar varios minutos la primera vez.")
+        # install.sh hace el bootstrap de Pigweed (gn, zap…). --no-host-tool
+        # evita compilar chip-tool, que no se usa en la asignatura.
+        info("Ejecutando install.sh --no-host-tool de ESP-Matter (bootstrap; varios minutos)…")
         print()
-        idf_q    = shlex.quote(str(idf_dir))
-        matter_q = shlex.quote(str(matter_dir))
-        # run() preserves os.environ; export.sh sets IDF_PATH/PATH inside the subshell.
+        idf_q = shlex.quote(str(idf_dir))
         rc, _, _ = run_bash(
-            f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && source {matter_q}/export.sh',
+            f'source {idf_q}/export.sh && cd {matter_q} && ./install.sh --no-host-tool',
             stream=True,
         )
         if rc != 0:
-            error("export.sh de ESP-Matter falló.")
+            error("install.sh de ESP-Matter falló.")
             sys.exit(1)
         success("ESP-Matter inicializado.")
         mark_done("export_esp_matter")
@@ -861,111 +851,136 @@ def ensure_dialout_access():
     return "restart_required"
 
 # ─────────────────────────────────────────────────
-#  PASO 10 — Flash guiado en placa ESP32-C6
+#  --probar-placa — Flashear y comprobar una placa ESP32-C6
 # ─────────────────────────────────────────────────
-def guided_flash_light_example():
-    step_banner(10, TOTAL_STEPS, "Flash guiado en placa ESP32-C6")
+SERIAL_CHECK_PY = r"""
+import sys, time, serial
+port, timeout = sys.argv[1], float(sys.argv[2])
+ser = serial.Serial()
+ser.port, ser.baudrate, ser.timeout = port, 115200, 0.2
+ser.dtr = False
+ser.rts = False
+ser.open()
+ser.rts = True; time.sleep(0.2); ser.rts = False   # reset (EN)
+buf, t0 = b"", time.time()
+while time.time() - t0 < timeout:
+    buf += ser.read(4096)
+    text = buf.decode("utf-8", "replace")
+    if "SetupQRCode" in text or "Manual pairing code" in text:
+        sys.stdout.write(text); print("\n__DIOT_OK__"); sys.exit(0)
+    if "Guru Meditation" in text or text.count("rst:0x") > 3:
+        sys.stdout.write(text); print("\n__DIOT_CRASH__"); sys.exit(3)
+sys.stdout.write(buf.decode("utf-8", "replace")); print("\n__DIOT_TIMEOUT__"); sys.exit(4)
+"""
 
-    if is_done("guided_flash_light_example"):
-        success("Flash guiado ya completado (checkpoint).")
-        return
 
+def _serial_ports():
+    return sorted(str(p) for p in list(Path("/dev").glob("ttyACM*")) + list(Path("/dev").glob("ttyUSB*")))
+
+
+def _find_usbipd():
+    for cand in ("usbipd.exe", "/mnt/c/Program Files/usbipd-win/usbipd.exe"):
+        path = shutil.which(cand) or (cand if Path(cand).exists() else None)
+        if path:
+            return path
+    return None
+
+
+def _attach_espressif_board():
+    """Intenta pasar la placa de Windows a WSL. Devuelve True si hay puerto serie."""
+    usbipd = _find_usbipd()
+    if usbipd is None:
+        warn("No encuentro usbipd.exe desde WSL.")
+        return False
+    rc, out, _ = run([usbipd, "list"], capture=True)
+    lines = [l for l in out.splitlines() if ESPRESSIF_USB_VID in l.lower()]
+    if rc != 0 or not lines:
+        warn("Windows no ve ninguna placa Espressif. ¿Está enchufada? Prueba otro cable/puerto USB.")
+        return False
+    line = lines[0]
+    busid = line.split()[0]
+    info(f"Placa encontrada en Windows: {line.strip()}")
+    if "not shared" in line.lower():
+        error("La placa todavía no está compartida con WSL (se hace una sola vez por PC).")
+        print(c(BOLD, "  Abre PowerShell COMO ADMINISTRADOR y ejecuta:"))
+        print(c(CYAN, f"      usbipd bind --busid {busid}"))
+        print(c(BOLD, "  Luego vuelve a lanzar:  python3 install_diot.py --probar-placa"))
+        return False
+    if "attached" not in line.lower():
+        info(f"Conectando la placa a WSL (usbipd attach --wsl --busid {busid})…")
+        run([usbipd, "attach", "--wsl", "--busid", busid], capture=True)
+    for _ in range(20):
+        if _serial_ports():
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def probar_placa():
+    header("DIOT — Prueba de placa ESP32-C6")
     idf_dir    = Path.home() / "esp" / "esp-idf"
     matter_dir = Path.home() / "esp" / "esp-matter"
     light_dir  = matter_dir / "examples" / "light"
 
-    if not light_dir.exists():
-        error(f"No se encontró el directorio de ejemplo: {light_dir}")
+    if not (light_dir / "build" / "light.bin").exists():
+        error("No está compilado el ejemplo light. Ejecuta antes la instalación completa:")
+        print(c(CYAN, "      python3 install_diot.py"))
         sys.exit(1)
 
-    info("Este paso requiere la placa conectada y adjuntada a WSL con usbipd.")
-    dialout_status = ensure_dialout_access()
-    if dialout_status == "restart_required":
-        warn("Deteniendo instalación para aplicar cambios de grupo dialout.")
-        warn("Reinicia WSL y vuelve a ejecutar install_diot.py; continuará desde checkpoints.")
-        sys.exit(2)
+    try:
+        dialout_gid = grp.getgrnam("dialout").gr_gid
+        if dialout_gid not in os.getgroups():
+            ensure_dialout_access()
+            error("Cierra Ubuntu, en PowerShell ejecuta 'wsl --shutdown', reabre y repite.")
+            sys.exit(2)
+    except KeyError:
+        pass
 
-    print(c(DIM, "  1) En PowerShell (Admin): usbipd list"))
-    print(c(DIM, "  2) En PowerShell (Admin): usbipd bind --busid <BUSID>"))
-    print(c(DIM, "  3) En PowerShell (Admin): usbipd attach --wsl --busid <BUSID>"))
-    print(c(DIM, "  4) Vuelve aquí y pulsa ENTER para continuar"))
-    print()
-
-    resp = input(c(CYAN, "  Pulsa ENTER cuando la placa esté adjuntada a WSL (o escribe 's' para saltar): "))
-    if resp.strip().lower() in ("s", "skip", "saltar"):
-        warn("Flash omitido por el usuario. Puedes relanzar el script y retomará este paso.")
-        return
-
-    ports = sorted([str(p) for p in Path('/dev').glob('ttyACM*')] + [str(p) for p in Path('/dev').glob('ttyUSB*')])
-    if ports:
-        info("Puertos serie detectados en WSL:")
-        for p in ports:
-            rw = os.access(p, os.R_OK | os.W_OK)
-            suffix = " (OK lectura/escritura)" if rw else " (sin permisos RW en esta sesión)"
-            print(c(DIM, f"    • {p}{suffix}"))
-        default_port = ports[0]
-    else:
-        warn("No se detectaron puertos /dev/ttyACM* ni /dev/ttyUSB*.")
-        default_port = "/dev/ttyACM0"
-
-    port_in = input(c(CYAN, f"  Puerto para flashear [{default_port}]: " )).strip()
-    port = port_in or default_port
-
-    idf_q = shlex.quote(str(idf_dir))
-    matter_q = shlex.quote(str(matter_dir))
-    light_q = shlex.quote(str(light_dir))
-    port_q = shlex.quote(port)
-
-    erase_resp = input(c(CYAN, "  ¿Borrar flash antes de flashear? (recomendado en laboratorio) [S/n]: " )).strip().lower()
-    flash_action = "erase-flash flash" if erase_resp not in ("n", "no") else "flash"
-    if flash_action == "erase-flash flash":
-        warn("Se borrará toda la flash (incluye estado Matter comisionado) antes de grabar firmware.")
-
-    info(f"Flasheando en {port} (acción: {flash_action})…")
-    rc, _, _ = run_bash(
-        f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && source {matter_q}/export.sh && '
-        f'cd {light_q} && idf.py -p {port_q} {flash_action}',
-        stream=True,
-    )
-    if rc != 0:
-        warn("Flasheo sin sudo falló. Intentando con sudo (fallback por permisos de puerto)…")
-        rc, _, _ = run_bash(
-            f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && source {matter_q}/export.sh && '
-            f'cd {light_q} && sudo idf.py -p {port_q} {flash_action}',
-            stream=True,
-        )
-        if rc != 0:
-            error("Flasheo falló incluso con sudo.")
-            print(c(DIM, "  Verifica en PowerShell (Admin):"))
-            print(c(DIM, "    usbipd list"))
-            print(c(DIM, "    usbipd detach --busid <BUSID>"))
-            print(c(DIM, "    usbipd attach --wsl --busid <BUSID>"))
-            print(c(DIM, "  Verifica en WSL:"))
-            print(c(DIM, "    ls -l /dev/ttyACM* /dev/ttyUSB*"))
-            if dialout_status != "ready":
-                print(c(DIM, "    (si añadiste dialout, haz wsl --shutdown y relanza script)"))
+    if not _serial_ports():
+        info("No hay puerto serie en WSL todavía; intento conectar la placa con usbipd…")
+        if not _attach_espressif_board():
+            print()
+            print(c(RED + BOLD, "  ✘  PLACA NO DETECTADA"))
             sys.exit(1)
+    port = _serial_ports()[0]
+    success(f"Puerto serie: {port}")
 
-    success("Flash completado.")
+    idf_q, matter_q, light_q, port_q = (shlex.quote(str(x)) for x in (idf_dir, matter_dir, light_dir, port))
+    env_cmd = f'source {idf_q}/export.sh >/dev/null && export ESP_MATTER_PATH={matter_q} && source {matter_q}/export.sh >/dev/null'
 
-    mon = input(c(CYAN, "  ¿Abrir monitor serie temporal (60s) ahora? [s/N]: " )).strip().lower()
-    if mon in ("s", "si", "sí", "y", "yes"):
-        info("Abriendo monitor temporal 60s (se cerrará solo para continuar instalación)…")
-        info("Si quieres monitor interactivo largo, ejecútalo luego manualmente con: idf.py -p <PUERTO> monitor")
-        run_bash(
-            f'source {idf_q}/export.sh && export ESP_MATTER_PATH={matter_q} && source {matter_q}/export.sh && '
-            f'cd {light_q} && timeout 60s idf.py -p {port_q} monitor || true',
-            stream=True,
-        )
+    info("Borrando la flash y grabando el ejemplo light (≈1 min)…")
+    rc, out, _ = run_bash(f'{env_cmd} && cd {light_q} && idf.py -p {port_q} erase-flash flash', stream=True)
+    if rc != 0:
+        print()
+        print(c(RED + BOLD, "  ✘  FALLO AL FLASHEAR"))
+        print(c(DIM, "  Desenchufa y vuelve a enchufar la placa y repite. Si sigue fallando,"))
+        print(c(DIM, "  mantén pulsado BOOT, pulsa RST, suelta BOOT y repite."))
+        sys.exit(1)
+    success("Flash grabada.")
 
-    mark_done("guided_flash_light_example")
+    info("Reiniciando la placa y esperando a que Matter arranque (máx. 30 s)…")
+    rc, out, _ = run_bash(f'{env_cmd} && python -c {shlex.quote(SERIAL_CHECK_PY)} {port_q} 30', capture=True)
+    log = out.strip().splitlines()
+    for l in [l for l in log if "SetupQRCode" in l or "Manual pairing" in l]:
+        print(c(DIM, f"    {l.strip()}"))
+    print()
+    if "__DIOT_OK__" in out:
+        print(c(GREEN + BOLD, "  ✔  PLACA OK — compila, flashea y arranca Matter en este PC"))
+        sys.exit(0)
+    for l in log[-15:]:
+        print(c(DIM, f"    {l}"))
+    if "__DIOT_CRASH__" in out:
+        print(c(RED + BOLD, "  ✘  LA PLACA SE REINICIA EN BUCLE (ver log arriba)"))
+    else:
+        print(c(RED + BOLD, "  ✘  LA PLACA NO RESPONDE POR EL PUERTO SERIE (ver log arriba)"))
+    sys.exit(1)
 
 
 # ─────────────────────────────────────────────────
-#  PASO 11 — Configurar VS Code remoto (WSL)
+#  PASO 10 — Configurar VS Code remoto (WSL)
 # ─────────────────────────────────────────────────
 def configure_vscode_remote_wsl():
-    step_banner(11, TOTAL_STEPS, "Configurar VS Code remoto (WSL)")
+    step_banner(10, TOTAL_STEPS, "Configurar VS Code remoto (WSL)")
 
     if is_done("configure_vscode_remote_wsl"):
         warn("Paso 11 ya estaba marcado, pero se revalidará la configuración VS Code para aplicar correcciones.")
@@ -998,13 +1013,10 @@ def configure_vscode_remote_wsl():
     code_cmd = shutil.which("code")
     if code_cmd is None:
         warn("No se encontró el comando 'code' en WSL todavía.")
-        print(c(DIM, "  Acción manual requerida:"))
-        print(c(DIM, "    1) En Windows, abre VS Code"))
-        print(c(DIM, "    2) Instala la extensión 'Remote - WSL' si falta"))
-        print(c(DIM, "    3) Conéctate a Ubuntu/WSL"))
-        print(c(DIM, "    4) En el remoto WSL, instala/reinstala 'Espressif IDF'"))
-        input(c(CYAN, "  Cuando lo hayas hecho, pulsa ENTER para continuar: "))
-        code_cmd = shutil.which("code")
+        print(c(DIM, "  Se configura igualmente. Para terminar (una vez, cuando quieras):"))
+        print(c(DIM, "    1) En Windows, abre VS Code e instala la extensión 'WSL'"))
+        print(c(DIM, "    2) Conéctate a Ubuntu/WSL"))
+        print(c(DIM, "    3) En el remoto WSL, instala la extensión 'Espressif IDF'"))
 
     bashrc_path = Path.home() / ".bashrc"
     export_lines = [
@@ -1105,32 +1117,18 @@ def configure_vscode_remote_wsl():
     mark_done("configure_vscode_remote_wsl")
 
 # ─────────────────────────────────────────────────
-#  PASO 12 — Instalar Matrix MCU (Toolchain ARM para STM32)
+#  PASO 11 — Instalar Matrix MCU (Toolchain ARM para STM32)
 # ─────────────────────────────────────────────────
 def install_matrix_mcu():
-    step_banner(12, TOTAL_STEPS, "Matrix MCU — Toolchain ARM para STM32 (opcional)")
+    step_banner(11, TOTAL_STEPS, "Matrix MCU (SDG2) — Toolchain ARM para STM32")
 
     if is_done("install_matrix_mcu"):
         success("Matrix MCU ya instalado (checkpoint).")
         return
 
-    print()
-    print(c(CYAN, "  ╔════════════════════════════════════════════════════╗"))
-    print(c(CYAN, "  ║  ¿Instalar Matrix MCU (Toolchain C ARM embebido)?  ║"))
-    print(c(CYAN, "  ╚════════════════════════════════════════════════════╝"))
-    print()
-    print(c(DIM, "  Matrix MCU proporciona herramientas de compilación cruzada para STM32:"))
-    print(c(DIM, "    • arm-none-eabi-gcc / arm-none-eabi-g++"))
-    print(c(DIM, "    • arm-none-eabi-gdb (debugging)"))
-    print(c(DIM, "    • OpenOCD (flash/debug)"))
-    print()
-    resp = input(c(CYAN, "  ¿Deseas instalar Matrix MCU? [s/N]: ")).strip().lower()
-    print()
-    
-    if resp not in ("s", "si", "sí", "y", "yes"):
-        info("Matrix MCU no instalado. Puedes instalarlo manualmente después ejecutando:")
-        info("  git clone https://github.com/sdg2DieUpm/install-MatrixMCU.git ~/install-MatrixMCU")
-        info("  cd ~/install-MatrixMCU && source ubuntu24.sh  # o ubuntu22.sh")
+    arm_gcc = Path("/opt/MatrixMCU/bin/arm-none-eabi-gcc")
+    if arm_gcc.exists() and run([str(arm_gcc), "--version"], capture=True)[0] == 0:
+        success("Toolchain ARM de MatrixMCU ya instalado en /opt/MatrixMCU.")
         mark_done("install_matrix_mcu")
         return
 
@@ -1146,10 +1144,7 @@ def install_matrix_mcu():
 
     info(f"Detectada Ubuntu {ubuntu_major}.")
 
-    # Clonar Matrix MCU en ~entornos/diot/install-MatrixMCU (hermana de install-diot)
-    install_diot_dir = Path.home() / "entornos" / "diot" / "install-diot"
-    parent_dir = install_diot_dir.parent  # ~/entornos/diot
-    matrix_mcu_dir = parent_dir / "install-MatrixMCU"
+    matrix_mcu_dir = Path.home() / "install-MatrixMCU"
 
     if matrix_mcu_dir.exists():
         info(f"Repositorio Matrix MCU ya existe en: {matrix_mcu_dir}")
@@ -1158,6 +1153,7 @@ def install_matrix_mcu():
         print()
         rc, _, _ = run(
             ["git", "clone", "--progress",
+             "--depth", "1",
              "https://github.com/sdg2DieUpm/install-MatrixMCU.git",
              str(matrix_mcu_dir)],
             stream=True
@@ -1181,24 +1177,18 @@ def install_matrix_mcu():
     info("Esto puede tardar 10-20 minutos…")
     print()
     
-    # Combinar en una sola sesión bash:
-    # 1. Ejecutar script de instalación
-    # 2. Hacer source ~/.bashrc para actualizar PATH
-    # 3. Verificar arm-none-eabi-gcc
-    # Esto asegura que los cambios de PATH se apliquen antes de verificar
+    # El script añade /opt/MatrixMCU/bin al PATH en ~/.bashrc, pero ese
+    # cambio no se ve en esta shell no interactiva: se verifica por ruta.
     matrix_mcu_q = shlex.quote(str(matrix_mcu_dir))
-    
     rc, out_combined, err_combined = run_bash(
-        f'cd {matrix_mcu_q} && source ./{script_name} && '
-        f'source ~/.bashrc && '
-        f'arm-none-eabi-gcc --version 2>&1',
-        capture=True,
-        stream=True
+        f'cd {matrix_mcu_q} && bash ./{script_name} && '
+        f'/opt/MatrixMCU/bin/arm-none-eabi-gcc --version 2>&1',
+        stream=True,
     )
-    
+
     if rc != 0:
         error("Instalación de Matrix MCU o verificación falló.")
-        warn(f"Intenta manualmente: cd {matrix_mcu_dir} && source {script_name}")
+        warn(f"Intenta manualmente: cd {matrix_mcu_dir} && bash {script_name}")
         if out_combined or err_combined:
             print(c(DIM, (out_combined + err_combined)[-500:]))  # Mostrar últimas 500 chars
         sys.exit(1)
@@ -1215,10 +1205,10 @@ def install_matrix_mcu():
     mark_done("install_matrix_mcu")
 
 # ─────────────────────────────────────────────────
-#  PASO 13 — Compilar proyecto template de MatrixMCU
+#  PASO 12 — Compilar proyecto template de MatrixMCU
 # ─────────────────────────────────────────────────
 def test_matrix_mcu_build():
-    step_banner(13, TOTAL_STEPS, "Test compilación Matrix MCU — Proyecto template")
+    step_banner(12, TOTAL_STEPS, "Test compilación Matrix MCU — Proyecto template")
 
     if is_done("test_matrix_mcu_build"):
         success("Test de compilación Matrix MCU ya completado (checkpoint).")
@@ -1233,6 +1223,7 @@ def test_matrix_mcu_build():
         print()
         rc, _, _ = run(
             ["git", "clone", "--progress", "--recursive",
+             "--depth", "1", "--shallow-submodules",
              "https://github.com/sdg2DieUpm/MatrixMCU.git",
              str(matrix_mcu_dir)],
             stream=True
@@ -1257,6 +1248,7 @@ def test_matrix_mcu_build():
     
     # Compilar: mkdir build, cd build, cmake -G Ninja .., ninja -v
     rc, out, err = run_bash(
+        f'export PATH=/opt/MatrixMCU/bin:$PATH && '
         f'cd {template_q} && '
         f'rm -rf build && '
         f'mkdir -p build && '
@@ -1321,26 +1313,19 @@ def welcome():
     print(c(DIM, "    • EIM — ESP-IDF Installation Manager"))
     print(c(DIM, "    • ESP-IDF v6.0.1 para ESP32-C6"))
     print(c(DIM, "    • ESP-Matter (Matter/Thread SDK)"))
-    print(c(DIM, "    • Flash guiado en placa ESP32-C6"))
     print(c(DIM, "    • Configuración VS Code remoto WSL"))
-    print(c(DIM, "    • Matrix MCU (Toolchain STM32) — OPCIONAL en el proceso"))
+    print(c(DIM, "    • Matrix MCU (Toolchain STM32, para SDG2)"))
     print(c(DIM, "    • Test compilación proyecto template MatrixMCU"))
     print()
-    print(c(YELLOW, "  ⏱  Tiempo estimado total: 50–85 minutos"))
-    print(c(YELLOW, "      (sin chip-tool; Matrix MCU + template test opcionales)"))
+    print(c(YELLOW, "  ⏱  Tiempo estimado: 30–50 min. No hace falta estar delante."))
+    print(c(YELLOW, "      Al terminar: python3 install_diot.py --probar-placa"))
     print()
 
     if CHECKPOINT_FILE.exists():
-        cp = load_checkpoints()
-        done_count = sum(1 for v in cp.values() if v)
+        done_count = sum(1 for v in load_checkpoints().values() if v)
         if done_count > 0:
-            print(c(GREEN, f"  ♻  Se encontraron {done_count} checkpoint(s) guardados."))
-            resp = input(c(CYAN, "  ¿Continuar desde donde se dejó? [S/n]: ")).strip().lower()
-            if resp in ("n", "no"):
-                reset_checkpoints()
-                info("Checkpoints borrados. Comenzando instalación desde cero.")
-            else:
-                info("Continuando desde el último checkpoint.")
+            print(c(GREEN, f"  ♻  {done_count} paso(s) ya hechos: se continúa desde ahí."))
+            print(c(DIM, "     (para empezar de cero: --desde-cero)"))
     print()
 
 # ─────────────────────────────────────────────────
@@ -1373,18 +1358,34 @@ def finish():
     print(box_line("    usbipd list"))
     print(box_line("    usbipd bind --busid <BUSID>"))
     print(box_line("    usbipd attach --wsl --busid <BUSID>"))
+    print(box_line())
+    print(box_line("  Comprobar una placa (enchufada al PC):"))
+    print(box_line("    python3 install_diot.py --probar-placa", CYAN))
     print(c(CYAN, "╚" + "═" * BOX_WIDTH + "╝"))
     print()
 
 # ─────────────────────────────────────────────────
 #  Número total de pasos (para la barra de progreso)
 # ─────────────────────────────────────────────────
-TOTAL_STEPS = 13
+TOTAL_STEPS = 12
 
 # ─────────────────────────────────────────────────
 #  Main
 # ─────────────────────────────────────────────────
 def main():
+    parser = argparse.ArgumentParser(description="Instalador del entorno DIOT (ESP-IDF + ESP-Matter + MatrixMCU) en WSL.")
+    parser.add_argument("--probar-placa", action="store_true",
+                        help="flashea el ejemplo light en la placa conectada y comprueba que arranca")
+    parser.add_argument("--desde-cero", action="store_true",
+                        help="borra los checkpoints y repite todos los pasos")
+    args = parser.parse_args()
+
+    if args.probar_placa:
+        probar_placa()
+        return
+    if args.desde_cero:
+        reset_checkpoints()
+
     welcome()
     request_sudo()
 
@@ -1395,10 +1396,10 @@ def main():
         install_eim()
         install_usbipd()
         install_build_deps()
+        dialout_status = ensure_dialout_access()
         install_esp_idf()
         install_esp_matter()
         test_matter_build()
-        guided_flash_light_example()
         configure_vscode_remote_wsl()
         install_matrix_mcu()
         test_matrix_mcu_build()
@@ -1411,6 +1412,8 @@ def main():
 
     _sudo_alive.set()
     finish()
+    if dialout_status == "restart_required":
+        warn("Antes de --probar-placa: cierra Ubuntu, 'wsl --shutdown' en PowerShell y reabre.")
 
 
 if __name__ == "__main__":
